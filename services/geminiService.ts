@@ -1,4 +1,3 @@
-
 // @ts-nocheck
 import { GoogleGenAI, Type, GenerateContentResponse } from "@google/genai";
 import { Asset, AnalysisResult, CreativePrompt, MarketingCopy, AspectRatio } from "../types";
@@ -7,9 +6,12 @@ import { Asset, AnalysisResult, CreativePrompt, MarketingCopy, AspectRatio } fro
  * SECURE INITIALIZATION
  */
 const getAI = () => {
-  const key = process.env.API_KEY;
-  if (!key || key === "undefined") {
-    throw new Error("STUDIO_CONFIG_ERROR: Secure environment key is missing.");
+  // Safe environment check to prevent "process is not defined" in live browsers
+  const env = (typeof process !== 'undefined' && process.env) ? process.env : (window.process?.env || {});
+  const key = env.API_KEY;
+
+  if (!key || key === "undefined" || key === "") {
+    throw new Error("STUDIO_CONFIG_ERROR: The API Key is missing. Please add 'API_KEY' to your Vercel Environment Variables and REDEPLOY.");
   }
   return new GoogleGenAI({ apiKey: key });
 };
@@ -19,6 +21,7 @@ const getAI = () => {
  */
 const sanitizeError = (err: any): string => {
   const msg = err?.message || "";
+  if (msg.includes("STUDIO_CONFIG_ERROR")) return msg;
   if (msg.includes("429")) return "QUOTA_EXHAUSTED: Studio capacity reached. Please wait a minute.";
   if (msg.includes("403") || msg.includes("401")) return "SECURITY_BLOCK: Access declined. Please check API credentials.";
   return "STUDIO_INTERRUPTION: An unexpected error occurred. Technical details scrubbed for safety.";
