@@ -6,35 +6,42 @@ import { Asset, AnalysisResult, CreativePrompt, MarketingCopy, AspectRatio } fro
  * SECURE INITIALIZATION
  */
 const getAI = () => {
-  // Safe environment check to prevent "process is not defined" in live browsers
-  const env = (typeof process !== 'undefined' && process.env) ? process.env : (window.process?.env || {});
-  const key = env.API_KEY;
-
-  if (!key || key === "undefined" || key === "") {
-    throw new Error("STUDIO_CONFIG_ERROR: The API Key is missing. Please add 'API_KEY' to your Vercel Environment Variables and REDEPLOY.");
+  if (!process.env.API_KEY || process.env.API_KEY === "undefined") {
+    throw new Error("STUDIO_CONFIG_ERROR: Secure environment key is missing.");
   }
-  return new GoogleGenAI({ apiKey: key });
+  return new GoogleGenAI({ apiKey: process.env.API_KEY });
 };
 
 /**
- * GLOBAL ERROR SANITIZER
+ * UTILITY: Wrap a function with retry logic specifically for 429 (Quota) errors
  */
+const withRetry = async <T>(fn: () => Promise<T>, retries = 2, delay = 5000): Promise<T> => {
+  try {
+    return await fn();
+  } catch (error: any) {
+    const errorString = JSON.stringify(error).toLowerCase();
+    const isQuotaError = 
+      error.message?.includes("429") || 
+      error.status === 429 || 
+      errorString.includes("429") || 
+      errorString.includes("quota") || 
+      errorString.includes("resource_exhausted");
+
+    if (retries > 0 && isQuotaError) {
+      console.warn(`[Studio API] Quota reached. Retrying in ${delay}ms...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+      return withRetry(fn, retries - 1, delay * 2);
+    }
+    throw error;
+  }
+};
+
 const sanitizeError = (err: any): string => {
-  const msg = err?.message || "";
-  if (msg.includes("STUDIO_CONFIG_ERROR")) return msg;
-  if (msg.includes("429")) return "QUOTA_EXHAUSTED: Studio capacity reached. Please wait a minute.";
-  if (msg.includes("403") || msg.includes("401")) return "SECURITY_BLOCK: Access declined. Please check API credentials.";
-  return "STUDIO_INTERRUPTION: An unexpected error occurred. Technical details scrubbed for safety.";
-};
-
-/**
- * RETAIL COMPLIANCE (PHOTOREALISTIC)
- */
-export const sanitizeForRetail = (text: string): string => {
-  if (!text) return "";
-  return text
-    .replace(/lingerie|bra|panty|underwear/gi, "premium lifestyle apparel")
-    .trim();
+  const errorString = JSON.stringify(err).toLowerCase();
+  if (errorString.includes("429") || errorString.includes("quota")) {
+    return "GEMINI_QUOTA: API capacity reached. Retrying automatically...";
+  }
+  return err.message || "STUDIO_ERROR: Something went wrong with the AI engine.";
 };
 
 const SAFETY_SETTINGS = [
@@ -70,7 +77,7 @@ export const compressImage = (base64: string, mimeType: string, maxDim: number =
       if (!ctx) return reject("Canvas context failed");
       ctx.drawImage(img, 0, 0, width, height);
       const targetMimeType = 'image/jpeg';
-      const compressedDataUrl = canvas.toDataURL(targetMimeType, 0.8);
+      const compressedDataUrl = canvas.toDataURL(targetMimeType, 0.85);
       const compressedBase64 = compressedDataUrl.split(',')[1];
       resolve({ base64: compressedBase64, url: compressedDataUrl, mimeType: targetMimeType });
     };
@@ -79,183 +86,187 @@ export const compressImage = (base64: string, mimeType: string, maxDim: number =
 };
 
 export const analyzeAssets = async (assets: Asset[]): Promise<AnalysisResult> => {
-  try {
-    const ai = getAI();
-    const parts = assets.map((asset) => ({
-      inlineData: { data: asset.base64, mimeType: asset.mimeType }
-    }));
-    
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: {
-        parts: [
-          ...parts,
-          { text: "SENIOR ART DIRECTOR SCAN: Perform a deep analysis of these visual assets. Identify every subject, the primary color palette, and the specific material textures. Create a photorealistic advertising vision. RETURN JSON ONLY." }
-        ]
-      },
-      config: {
-        systemInstruction: `You are the Head of Global Design. Your mission is to provide technical brand metadata.
-        - Identify Colors: List primary colors.
-        - Create Vision: The 'suggestedPrompt' MUST be a photorealistic scene combining ALL uploaded subjects.
-        - NO MESH/WIREFRAME. NO AI SLANG. 100% COMMERCIAL PHOTOGRAPHY QUALITY.`,
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            subjects: { type: Type.STRING },
-            lighting: { type: Type.STRING },
-            details: { type: Type.STRING },
-            quality: { type: Type.STRING },
-            brandVibe: { type: Type.STRING },
-            suggestedPrompt: { type: Type.STRING }
-          },
-          required: ["subjects", "lighting", "details", "quality", "brandVibe", "suggestedPrompt"]
+  return withRetry(async () => {
+    try {
+      const ai = getAI();
+      const parts = assets.map((asset) => ({
+        inlineData: { data: asset.base64, mimeType: asset.mimeType }
+      }));
+      
+      const response = await ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: {
+          parts: [
+            ...parts,
+            { text: "SENIOR ART DIRECTOR SCAN: High-fidelity visual analysis. Identify product materials, brand colors, and typography. Generate a MASTERPIECE creative directive for a luxury agency. Use technical photography language (e.g. Phase One XF, 85mm Schneider lens, cinematic lighting). RETURN JSON ONLY." }
+          ]
         },
-        safetySettings: SAFETY_SETTINGS
-      }
-    });
-    return JSON.parse(response.text || "{}");
-  } catch (error) {
-    throw new Error(sanitizeError(error));
-  }
+        config: {
+          systemInstruction: "You are an Elite Global Creative Director. You transform assets into world-class design directives.",
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              subjects: { type: Type.STRING },
+              lighting: { type: Type.STRING },
+              details: { type: Type.STRING },
+              quality: { type: Type.STRING },
+              brandVibe: { type: Type.STRING },
+              suggestedPrompt: { type: Type.STRING }
+            },
+            required: ["subjects", "lighting", "details", "quality", "brandVibe", "suggestedPrompt"]
+          },
+          safetySettings: SAFETY_SETTINGS
+        }
+      });
+      return JSON.parse(response.text || "{}");
+    } catch (error) {
+      throw new Error(sanitizeError(error));
+    }
+  });
 };
 
-export const refinePrompt = async (prompt: string, analysis?: AnalysisResult | null): Promise<string> => {
-  try {
-    const ai = getAI();
-    const contents = analysis 
-      ? `Using the Analysis Context (Subjects: ${analysis.subjects}), refine this user vision for viral aesthetic: "${prompt}"`
-      : `Refine this creative vision for a photorealistic ad: "${prompt}"`;
-
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents,
-      config: {
-        systemInstruction: "You are the Senior Executive Art Director. Rewrite the prompt for absolute photorealism. OUTPUT ONLY THE REFINED PROMPT TEXT. NO HEADINGS. NO INTROS. NO QUOTES.",
-        safetySettings: SAFETY_SETTINGS
-      }
-    });
-    return response.text?.trim().replace(/^['"]|['"]$/g, '') || prompt;
-  } catch (error) {
-    throw new Error(sanitizeError(error));
-  }
+export const refinePrompt = async (prompt: string): Promise<string> => {
+  return withRetry(async () => {
+    try {
+      const ai = getAI();
+      const response = await ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: `USER INPUT: "${prompt}". 
+        ACT AS: Head of Design & Senior Art Director. 
+        TASK: Refine this into a professional, technically precise advertising directive. 
+        INSTRUCTIONS: Use expert terminology for lighting (e.g., Rembrandt, Chiaroscuro), camera optics (e.g., f/1.8, bokeh depth), and high-end composition. Ensure the prompt describes an elite-quality commercial shoot suitable for a global luxury brand.`,
+        config: {
+          systemInstruction: "You are the Head of Design at a world-class agency. Refine user ideas into professional art-directed prompts. ONLY OUTPUT THE REFINED TEXT.",
+          safetySettings: SAFETY_SETTINGS
+        }
+      });
+      return response.text?.trim() || prompt;
+    } catch (error) {
+      throw new Error(sanitizeError(error));
+    }
+  });
 };
 
-export const generateMarketingCopy = async (prompt: string, analysis?: AnalysisResult | null): Promise<MarketingCopy> => {
-  try {
-    const ai = getAI();
-    const context = analysis ? `Product/Subject Analysis: ${analysis.subjects}. Tone: ${analysis.brandVibe}. Vision: ${prompt}.` : `Vision: ${prompt}.`;
-    
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: `${context} Generate viral-worthy advertising copy. Return JSON: {headline, caption, cta}.`,
-      config: {
-        systemInstruction: `You are a World-Class Viral Copywriter. 
-        - headline: Catchy, short, bold headline.
-        - caption: Engaging social media caption (Instagram/TikTok style) with emojis, optimized for engagement.
-        - cta: Powerful call to action (e.g., 'Shop the Collection', 'Transform Your Space').
-        Return JSON.`,
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            headline: { type: Type.STRING },
-            caption: { type: Type.STRING },
-            cta: { type: Type.STRING }
+export const generateMarketingCopy = async (prompt: string): Promise<MarketingCopy> => {
+  return withRetry(async () => {
+    try {
+      const ai = getAI();
+      const response = await ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: `CREATIVE VISION: "${prompt}". 
+        ROLE: Senior Copywriter & Social Media Strategist. 
+        TASK: Generate viral, high-conversion marketing copy. 
+        TONE: Sophisticated, persuasive, luxury-oriented. 
+        OUTPUT: JSON with headline, caption, and cta.`,
+        config: {
+          systemInstruction: "You are a World-Class Copywriter. Your copy is elegant and high-impact.",
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              headline: { type: Type.STRING },
+              caption: { type: Type.STRING },
+              cta: { type: Type.STRING }
+            },
+            required: ["headline", "caption", "cta"]
           },
-          required: ["headline", "caption", "cta"]
-        },
-        safetySettings: SAFETY_SETTINGS
-      }
-    });
-    return JSON.parse(response.text || "{}");
-  } catch (error) {
-    throw new Error(sanitizeError(error));
-  }
+          safetySettings: SAFETY_SETTINGS
+        }
+      });
+      return JSON.parse(response.text || "{}");
+    } catch (error) {
+      throw new Error(sanitizeError(error));
+    }
+  });
 };
 
 export const isolateSubject = async (asset: Asset): Promise<{ base64: string, url: string }> => {
-  try {
-    const ai = getAI();
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash-image',
-      contents: {
-        parts: [
-          { inlineData: { data: asset.base64, mimeType: asset.mimeType } },
-          { text: "PRODUCTION TOOL: Extract and isolate the primary subject with perfect edge detection. DO NOT REMOVE any important parts. Pure white background #FFFFFF." }
-        ]
-      },
-      config: { safetySettings: SAFETY_SETTINGS }
-    });
+  return withRetry(async () => {
+    try {
+      const ai = getAI();
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash-image',
+        contents: {
+          parts: [
+            { inlineData: { data: asset.base64, mimeType: asset.mimeType } },
+            { text: "Precision extraction: Isolate the primary product subject with perfect edge detection. Remove all background. Output on #FFFFFF canvas." }
+          ]
+        },
+        config: { safetySettings: SAFETY_SETTINGS }
+      });
 
-    let isolatedBase64 = '';
-    const parts = response.candidates?.[0]?.content?.parts || [];
-    for (const part of parts) {
-      if (part.inlineData) {
-        isolatedBase64 = part.inlineData.data;
-        break;
+      let isolatedBase64 = '';
+      const parts = response.candidates?.[0]?.content?.parts || [];
+      for (const part of parts) {
+        if (part.inlineData) { isolatedBase64 = part.inlineData.data; break; }
       }
+      if (!isolatedBase64) throw new Error("ISO_FAIL: Extraction failed.");
+      return { base64: isolatedBase64, url: `data:image/png;base64,${isolatedBase64}` };
+    } catch (err) {
+      throw err;
     }
-    return isolatedBase64 ? { base64: isolatedBase64, url: `data:image/png;base64,${isolatedBase64}` } : { base64: asset.base64, url: asset.url };
-  } catch (err) {
-    return { base64: asset.base64, url: asset.url };
-  }
+  });
 };
 
 export const generatePoster = async (
   assets: Asset[], 
   prompt: string, 
   ratio: AspectRatio,
-  bgRemoval: boolean,
-  copy?: MarketingCopy | null
+  bgRemoval: boolean
 ): Promise<string> => {
-  try {
-    const ai = getAI();
-    const assetParts = assets.map((a) => {
-      const data = (bgRemoval && a.isolatedBase64) ? a.isolatedBase64 : a.base64;
-      return { inlineData: { data, mimeType: 'image/png' } };
-    });
+  return withRetry(async () => {
+    try {
+      const ai = getAI();
+      const assetParts = assets.map((a) => {
+        const data = (bgRemoval && a.isolatedBase64) ? a.isolatedBase64 : a.base64;
+        return { inlineData: { data, mimeType: 'image/png' } };
+      });
 
-    const supportedRatios: Record<string, string> = {
-      'Instagram Post (1:1)': '1:1', 
-      'Instagram Portrait (4:5)': '3:4', // Best fit for 4:5 in Gemini
-      'Instagram Reel (9:16)': '9:16', 
-      'Facebook Post (16:9)': '16:9', 
-      'YouTube Thumbnail (16:9)': '16:9'
-    };
+      const supportedRatios: Record<string, string> = {
+        'Instagram Square (1:1)': '1:1', 
+        'Instagram Portrait (4:5)': '3:4', 
+        'Instagram Story (9:16)': '9:16', 
+        'Facebook Feed (16:9)': '16:9', 
+        'Facebook Cover (16:9)': '16:9',
+        'YouTube Thumbnail (16:9)': '16:9',
+        'LinkedIn Feed (4:5)': '3:4',
+        'LinkedIn Header (16:9)': '16:9'
+      };
 
-    const targetRatio = supportedRatios[ratio] || '1:1';
+      const targetRatio = supportedRatios[ratio] || '1:1';
+      
+      const finalPrompt = `ART DIRECTION: ${prompt}. 
+      RETAIL COMPLIANCE: Use product's exact colors and textures. 
+      COMPOSITION: Elite, agency-quality commercial ad. 
+      FINISH: Seamless blending, realistic shadows, professional grading. 
+      The final output must look like a high-end commercial poster from a top global agency. 
+      FORMAT: ${targetRatio}`;
 
-    const finalPrompt = `PRODUCTION SOURCE: Use the exact subjects provided.
-    VISION: ${prompt}
-    ART DIRECTION: Composite all uploaded subjects seamlessly into a high-end, 8k photorealistic photography advertisement.
-    ${(copy && copy.headline) ? `BRANDING: Subtly integrate headline: "${copy.headline}" and CTA: "${copy.cta}"` : ""}
-    MANDATORY: NO WIREFRAMES. NO MESHES. 100% REAL PHOTOGRAPHY.
-    FORMAT: ${targetRatio}`;
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash-image',
+        contents: {
+          parts: [...assetParts, { text: finalPrompt }]
+        },
+        config: {
+          imageConfig: { aspectRatio: targetRatio as any },
+          safetySettings: SAFETY_SETTINGS
+        }
+      });
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash-image',
-      contents: {
-        parts: [...assetParts, { text: finalPrompt }]
-      },
-      config: {
-        imageConfig: { aspectRatio: targetRatio as any },
-        safetySettings: SAFETY_SETTINGS
+      let imageUrl = '';
+      const parts = response.candidates?.[0]?.content?.parts || [];
+      for (const part of parts) {
+        if (part.inlineData) { 
+          imageUrl = `data:image/png;base64,${part.inlineData.data}`; 
+          break; 
+        }
       }
-    });
-
-    let imageUrl = '';
-    const parts = response.candidates?.[0]?.content?.parts || [];
-    for (const part of parts) {
-      if (part.inlineData) { 
-        imageUrl = `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`; 
-        break; 
-      }
+      
+      if (!imageUrl) throw new Error("GEN_FAIL: Poster generation yielded no visual.");
+      return imageUrl;
+    } catch (error) {
+      throw new Error(sanitizeError(error));
     }
-    
-    if (!imageUrl) throw new Error("RETAIL_POLICY_REJECTION");
-    return imageUrl;
-  } catch (error) {
-    throw new Error(sanitizeError(error));
-  }
+  });
 };

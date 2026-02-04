@@ -4,6 +4,8 @@ export enum AssetType {
   MODEL = 'model'
 }
 
+export type ProcessingStatus = 'pending' | 'processing' | 'completed' | 'failed';
+
 export interface Asset {
   id: string;
   url: string;
@@ -13,6 +15,8 @@ export interface Asset {
   type: AssetType;
   name: string;
   mimeType: string;
+  status?: ProcessingStatus;
+  error?: string;
 }
 
 export interface AnalysisResult {
@@ -38,11 +42,14 @@ export interface MarketingCopy {
 }
 
 export type AspectRatio = 
-  | 'Instagram Post (1:1)' 
+  | 'Instagram Square (1:1)' 
   | 'Instagram Portrait (4:5)' 
-  | 'Instagram Reel (9:16)' 
-  | 'Facebook Post (16:9)' 
-  | 'YouTube Thumbnail (16:9)';
+  | 'Instagram Story (9:16)' 
+  | 'Facebook Feed (16:9)' 
+  | 'Facebook Cover (16:9)'
+  | 'YouTube Thumbnail (16:9)'
+  | 'LinkedIn Feed (4:5)'
+  | 'LinkedIn Header (16:9)';
 
 export interface HistoryItem {
   id: string;
