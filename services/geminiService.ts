@@ -98,11 +98,11 @@ export const analyzeAssets = async (assets: Asset[]): Promise<AnalysisResult> =>
         contents: {
           parts: [
             ...parts,
-            { text: "SENIOR ART DIRECTOR SCAN: High-fidelity visual analysis. Identify product materials, brand colors, and typography. Generate a MASTERPIECE creative directive for a luxury agency. Use technical photography language (e.g. Phase One XF, 85mm Schneider lens, cinematic lighting). RETURN JSON ONLY." }
+            { text: "SENIOR ART DIRECTOR INTELLIGENT SCAN: Analyze the visual DNA of all provided assets. These may include primary products, human models, background environments, pets, animals, or lifestyle elements. Your goal is to synthesize a cohesive, professional story connecting them all. Identify material textures (brushed metal, silk, fur), lighting conditions, and brand identity. Generate a 'suggestedPrompt' that acts as a technical creative brief. It must describe an elite photography scene where these elements interact logically (e.g., 'A model in high-fashion urban wear holding the [Product] while walking a [Pet] through a minimalist architectural lobby'). Use high-end specs (85mm prime, Phase One XF, cinematic God-rays). RETURN JSON ONLY." }
           ]
         },
         config: {
-          systemInstruction: "You are an Elite Global Creative Director. You transform assets into world-class design directives.",
+          systemInstruction: "You are an Elite Global Creative Director. You transform varied visual assets into intelligent, harmonious design directives.",
           responseMimeType: "application/json",
           responseSchema: {
             type: Type.OBJECT,
@@ -160,7 +160,7 @@ export const generateMarketingCopy = async (prompt: string): Promise<MarketingCo
         TONE: Sophisticated, persuasive, luxury-oriented. 
         OUTPUT: JSON with headline, caption, and cta.`,
         config: {
-          systemInstruction: "You are a World-Class Copywriter. Your copy is elegant and high-impact.",
+          systemInstruction: "You are a World-Class Copywriter. Your copy is elegant and high-impact. The CTA should be strong and punchy.",
           responseMimeType: "application/json",
           responseSchema: {
             type: Type.OBJECT,
@@ -213,7 +213,8 @@ export const generatePoster = async (
   assets: Asset[], 
   prompt: string, 
   ratio: AspectRatio,
-  bgRemoval: boolean
+  bgRemoval: boolean,
+  marketingCopy?: MarketingCopy | null
 ): Promise<string> => {
   return withRetry(async () => {
     try {
@@ -236,11 +237,31 @@ export const generatePoster = async (
 
       const targetRatio = supportedRatios[ratio] || '1:1';
       
-      const finalPrompt = `ART DIRECTION: ${prompt}. 
-      RETAIL COMPLIANCE: Use product's exact colors and textures. 
-      COMPOSITION: Elite, agency-quality commercial ad. 
-      FINISH: Seamless blending, realistic shadows, professional grading. 
-      The final output must look like a high-end commercial poster from a top global agency. 
+      let brandingText = '';
+      if (marketingCopy) {
+        // STRICT REQUIREMENT: Only include Headline and CTA. Exclude Caption.
+        brandingText = `
+        MARKETING ELEMENTS TO RENDER:
+        - HEADLINE: "${marketingCopy.headline || ''}"
+        - CALL TO ACTION (CTA): "${marketingCopy.cta || ''}"
+        - IMPORTANT: DO NOT include any supporting caption or body text in the actual poster visual.
+        `;
+      }
+
+      const finalPrompt = `
+      VISION: ${prompt}. 
+      ${brandingText}
+
+      ROLE: Senior Art Director at a World-Class Agency.
+      TASK: Composite the provided assets into an elite, photorealistic commercial ad poster.
+      
+      ARTISTIC DIRECTIVES:
+      1. INTEGRATE BRANDING: Render the Headline and the CTA into the design. The CTA should look like a premium, integrated element (e.g., a sophisticated button or high-end typography).
+      2. COLOR HARMONY: All text and graphic elements must use the product's exact color palette and material finishes found in the assets.
+      3. TYPOGRAPHY: Use only elite-level fonts that match the product's brand identity. Ensure text is legible yet sophisticated.
+      4. COMPOSITION: Place elements to guide the eye toward the product and the CTA. The text must feel part of the high-end photographic composition, not an overlay.
+      5. FINISH: Commercial-grade color grading, realistic contact shadows, and perfect exposure.
+      
       FORMAT: ${targetRatio}`;
 
       const response = await ai.models.generateContent({
