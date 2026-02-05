@@ -1,4 +1,3 @@
-
 export enum AssetType {
   PRODUCT = 'product',
   MODEL = 'model'
@@ -37,7 +36,7 @@ export interface CreativePrompt {
 
 export interface MarketingCopy {
   headline: string;
-  caption: string;
+  bodyCopy: string;
   cta: string;
 }
 
@@ -49,7 +48,7 @@ export type AspectRatio =
   | 'Facebook Cover (16:9)'
   | 'YouTube Thumbnail (16:9)'
   | 'LinkedIn Feed (4:5)'
-  | 'LinkedIn Header (16:9)';
+  | 'Custom';
 
 export interface HistoryItem {
   id: string;
@@ -57,5 +56,7 @@ export interface HistoryItem {
   prompt: string;
   copy: MarketingCopy | null;
   ratio: AspectRatio;
+  customWidth?: number;
+  customHeight?: number;
   timestamp: number;
 }

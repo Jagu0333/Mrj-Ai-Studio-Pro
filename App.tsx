@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   Sparkles, 
   Image as ImageIcon, 
@@ -23,7 +23,11 @@ import {
   Minimize,
   Trash2,
   ChevronRight,
-  SendHorizontal
+  SendHorizontal,
+  Edit3,
+  PenTool,
+  Copy,
+  Check
 } from 'lucide-react';
 import { 
   Asset, 
@@ -52,7 +56,9 @@ const App: React.FC = () => {
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
   const [selectedPrompt, setSelectedPrompt] = useState('');
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>('Instagram Square (1:1)');
-  const [marketingCopy, setMarketingCopy] = useState<MarketingCopy>({ headline: '', caption: '', cta: '' });
+  const [customWidth, setCustomWidth] = useState(1920);
+  const [customHeight, setCustomHeight] = useState(1080);
+  const [marketingCopy, setMarketingCopy] = useState<MarketingCopy>({ headline: '', bodyCopy: '', cta: '' });
   const [isGeneratingPoster, setIsGeneratingPoster] = useState(false);
   const [loadingStep, setLoadingStep] = useState(0);
   const [isGeneratingCopy, setIsGeneratingCopy] = useState(false);
@@ -66,10 +72,13 @@ const App: React.FC = () => {
   const [isCoolingDown, setIsCoolingDown] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(() => localStorage.getItem('studio-theme') === 'dark');
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [copiedBody, setCopiedBody] = useState(false);
 
   useEffect(() => {
     loadHistory();
-    const handleFullscreenChange = () => setIsFullscreen(!!document.fullscreenElement);
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
     document.addEventListener('fullscreenchange', handleFullscreenChange);
     return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
   }, []);
@@ -97,20 +106,37 @@ const App: React.FC = () => {
   }, [isGeneratingPoster]);
 
   const toggleFullscreen = () => {
-    if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen().catch(err => console.error(err.message));
-    } else {
-      document.exitFullscreen();
-    }
+    try {
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen().catch(() => {
+          setError("Fullscreen request failed. System dialogs like file pickers often interrupt Fullscreen mode for security.");
+        });
+      } else {
+        document.exitFullscreen();
+      }
+    } catch (e) { console.error(e); }
   };
 
   const loadHistory = async () => {
     try {
       const items = await db.getHistory();
       setHistory(items);
-    } catch (err) {
-      console.error("History error", err);
+    } catch (err) { console.error("History error", err); }
+  };
+
+  const editHistoryItem = (item: HistoryItem) => {
+    setSelectedPrompt(item.prompt);
+    if (item.copy) {
+      setMarketingCopy(item.copy);
+    } else {
+      setMarketingCopy({ headline: '', bodyCopy: '', cta: '' });
     }
+    setAspectRatio(item.ratio);
+    if (item.customWidth) setCustomWidth(item.customWidth);
+    if (item.customHeight) setCustomHeight(item.customHeight);
+    setShowHistory(false);
+    setActiveTab('studio');
+    setFinalImage(item.imageUrl);
   };
 
   const triggerIsolation = useCallback(async (assetId: string) => {
@@ -124,6 +150,7 @@ const App: React.FC = () => {
       ));
     } catch (err: any) {
       setAssets(prev => prev.map(a => a.id === assetId ? { ...a, status: 'failed', error: err.message } : a));
+      setError(err.message);
     } finally {
       setIsCoolingDown(true);
       setTimeout(() => setIsCoolingDown(false), 2000); 
@@ -203,7 +230,7 @@ const App: React.FC = () => {
   };
 
   const handleClearCopy = () => {
-    setMarketingCopy({ headline: '', caption: '', cta: '' });
+    setMarketingCopy({ headline: '', bodyCopy: '', cta: '' });
   };
 
   const handleGeneratePoster = async () => {
@@ -211,14 +238,35 @@ const App: React.FC = () => {
     setIsGeneratingPoster(true);
     setActiveTab('preview');
     try {
-      // Pass marketingCopy. Headline and CTA will be integrated by the service.
-      const img = await gemini.generatePoster(assets, selectedPrompt, aspectRatio, bgRemovalEnabled, marketingCopy.headline ? marketingCopy : null);
+      const copyForPoster = (marketingCopy.headline?.trim() || marketingCopy.cta?.trim()) ? marketingCopy : null;
+      const img = await gemini.generatePoster(
+          assets, 
+          selectedPrompt, 
+          aspectRatio, 
+          bgRemovalEnabled, 
+          copyForPoster,
+          aspectRatio === 'Custom' ? customWidth : undefined,
+          aspectRatio === 'Custom' ? customHeight : undefined
+      );
       setFinalImage(img);
-      const item: HistoryItem = { id: Math.random().toString(36).substr(2, 9), imageUrl: img, prompt: selectedPrompt, copy: marketingCopy.headline ? marketingCopy : null, ratio: aspectRatio, timestamp: Date.now() };
+      const item: HistoryItem = { 
+          id: Math.random().toString(36).substr(2, 9), 
+          imageUrl: img, 
+          prompt: selectedPrompt, 
+          copy: marketingCopy.headline?.trim() || marketingCopy.bodyCopy?.trim() || marketingCopy.cta?.trim() ? marketingCopy : null, 
+          ratio: aspectRatio, 
+          customWidth: aspectRatio === 'Custom' ? customWidth : undefined,
+          customHeight: aspectRatio === 'Custom' ? customHeight : undefined,
+          timestamp: Date.now() 
+      };
       await db.saveHistoryItem(item);
       loadHistory();
-    } catch (err: any) { setError(err.message); setActiveTab('studio'); }
-    finally { setIsGeneratingPoster(false); }
+    } catch (err: any) { 
+        setError(err.message); 
+        setActiveTab('studio'); 
+    } finally { 
+        setIsGeneratingPoster(false); 
+    }
   };
 
   const handleDownload = (imageUrl: string, prefix: string = 'Design') => {
@@ -232,6 +280,13 @@ const App: React.FC = () => {
     document.body.removeChild(link);
   };
 
+  const copyBodyToClipboard = () => {
+    if (!marketingCopy.bodyCopy) return;
+    navigator.clipboard.writeText(marketingCopy.bodyCopy);
+    setCopiedBody(true);
+    setTimeout(() => setCopiedBody(false), 2000);
+  };
+
   const ratioOptions: { label: AspectRatio; icon: React.ReactNode; pixels: string }[] = [
     { label: 'Instagram Square (1:1)', icon: <Layers className="w-5 h-5" />, pixels: '1080x1080' },
     { label: 'Instagram Portrait (4:5)', icon: <Smartphone className="w-5 h-5" />, pixels: '1080x1350' },
@@ -240,13 +295,13 @@ const App: React.FC = () => {
     { label: 'Facebook Cover (16:9)', icon: <Monitor className="w-5 h-5" />, pixels: '820x312' },
     { label: 'YouTube Thumbnail (16:9)', icon: <Monitor className="w-5 h-5" />, pixels: '1280x720' },
     { label: 'LinkedIn Feed (4:5)', icon: <Layers className="w-5 h-5" />, pixels: '1080x1350' },
-    { label: 'LinkedIn Header (16:9)', icon: <Monitor className="w-5 h-5" />, pixels: '1584x396' }
+    { label: 'Custom', icon: <Edit3 className="w-5 h-5" />, pixels: 'Pro Choice' }
   ];
 
   return (
     <div className="fixed inset-0 flex flex-col overflow-hidden text-[#1d1d1f] dark:text-[#f5f5f7] bg-[#f5f5f7] dark:bg-[#000000] selection:bg-ios-blue selection:text-white">
       
-      {/* Header - Aligned for Mobile/Desktop Efficiency */}
+      {/* Header */}
       <header className="h-16 glass-nav px-6 lg:px-12 flex items-center justify-between z-[200]">
         <div className="flex items-center gap-3 lg:gap-4">
           <div className="w-9 h-9 lg:w-10 lg:h-10 bg-ios-blue rounded-ios flex items-center justify-center shadow-lg shadow-blue-500/10">
@@ -273,10 +328,10 @@ const App: React.FC = () => {
 
       <div className="flex-1 flex flex-col lg:flex-row relative overflow-hidden">
         
-        {/* Sidebar - Mobile/Desktop Standardised h-24 Grid Boxes */}
-        <aside className={`${activeTab === 'studio' ? 'flex' : 'hidden'} lg:flex w-full lg:w-[420px] h-full flex-col p-6 lg:p-10 gap-8 lg:gap-8 overflow-y-auto ios-scrollbar pb-32`}>
+        {/* Sidebar */}
+        <aside className={`${activeTab === 'studio' ? 'flex' : 'hidden'} lg:flex w-full lg:w-[420px] h-full flex-col p-6 lg:p-10 gap-8 overflow-y-auto ios-scrollbar pb-32`}>
           
-          {/* Section 01: Studio Assets */}
+          {/* Section 01: Assets */}
           <section className="animate-pro-reveal" style={{ animationDelay: '0s' }}>
             <div className="flex items-center justify-between px-1 mb-3">
               <h2 className="sidebar-section-title !mb-0">01 Studio Assets</h2>
@@ -319,13 +374,27 @@ const App: React.FC = () => {
                     <button onClick={() => removeAsset(asset.id)} className="absolute top-0 right-0 p-1 bg-black/40 text-white rounded-bl-ios-sm hover:bg-red-500">
                       <X className="w-3.5 h-3.5" />
                     </button>
+                    {asset.status === 'completed' && asset.isolatedUrl && (
+                      <button 
+                        onClick={() => handleDownload(asset.isolatedUrl!, `Studio_Subject_${asset.name}`)}
+                        className="absolute bottom-0 right-0 p-1 bg-green-500/80 text-white rounded-tl-ios-sm hover:bg-green-600 transition-colors"
+                        title="Download Transparent Subject"
+                      >
+                        <Download className="w-3 h-3" />
+                      </button>
+                    )}
+                    {asset.status === 'failed' && (
+                      <div className="absolute inset-0 bg-red-500/20 flex items-center justify-center" title={asset.error}>
+                        <AlertCircle className="w-5 h-5 text-red-600" />
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
             )}
           </section>
 
-          {/* Section 02: Vision Engine - Smart Scan Architecture */}
+          {/* Section 02: Vision Engine */}
           <section className="animate-pro-reveal" style={{ animationDelay: '0.1s' }}>
             <div className="flex items-center justify-between px-1 mb-3">
               <h2 className="sidebar-section-title !mb-0">02 Vision Engine</h2>
@@ -333,7 +402,6 @@ const App: React.FC = () => {
                 onClick={handleAnalyzeAssets} 
                 disabled={assets.length === 0 || isAnalyzing} 
                 className="text-[10px] font-black text-ios-blue uppercase tracking-widest disabled:opacity-30 flex items-center gap-1.5"
-                title="Smarter Multimodal Asset Scan"
               >
                 {isAnalyzing ? <RefreshCw className="w-3 h-3 animate-spin" /> : <BrainCircuit className="w-3.5 h-3.5" />}
                 Smart Scan
@@ -343,21 +411,20 @@ const App: React.FC = () => {
               <textarea 
                 value={selectedPrompt} 
                 onChange={(e) => setSelectedPrompt(e.target.value)} 
-                placeholder="Synthesize your agency directive..." 
-                className="w-full glass-card rounded-ios p-5 text-[14px] font-medium leading-relaxed min-h-[140px] resize-none hover:bg-white/90 dark:hover:bg-white/10" 
+                placeholder="Synthesize your visual directive..." 
+                className="w-full glass-card rounded-ios p-5 text-[14px] font-medium leading-relaxed min-h-[140px] resize-none hover:bg-white/90 dark:hover:bg-white/10 focus:outline-none" 
               />
               <button 
                 onClick={handleRefinePrompt} 
                 disabled={!selectedPrompt || isRefining} 
                 className="absolute bottom-5 right-5 w-10 h-10 bg-ios-blue/10 dark:bg-white/10 hover:bg-ios-blue hover:text-white flex items-center justify-center rounded-full transition-all active:scale-90 disabled:opacity-20 shadow-lg"
-                title="Art Director Technical Refine"
               >
                 {isRefining ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Zap className="w-5 h-5 fill-current" />}
               </button>
             </div>
           </section>
 
-          {/* Section 03: Brand Voice - Only Headline and CTA integrated in Poster */}
+          {/* Section 03: Brand Voice */}
           <section className="animate-pro-reveal" style={{ animationDelay: '0.2s' }}>
              <div className="flex items-center justify-between px-1 mb-3">
               <h2 className="sidebar-section-title !mb-0">03 Brand Voice</h2>
@@ -374,49 +441,66 @@ const App: React.FC = () => {
                   disabled={!selectedPrompt || isGeneratingCopy} 
                   className="text-[10px] font-black text-ios-blue uppercase tracking-widest flex items-center gap-1.5 disabled:opacity-30"
                 >
-                  {isGeneratingCopy ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Megaphone className="w-3.5 h-3.5" />}
-                  Generate Copy
+                  {isGeneratingCopy ? <RefreshCw className="w-3 h-3 animate-spin" /> : <PenTool className="w-3.5 h-3.5" />}
+                  Smart Copy
                 </button>
               </div>
             </div>
 
             <div className="space-y-4">
-              <div className="glass-card rounded-ios p-4 lg:p-5">
-                <span className="text-[9px] font-black text-[#8e8e93] uppercase mb-1.5 block tracking-widest">Head of Strategy Hook</span>
+              <div className="glass-card rounded-ios p-4 lg:p-5 group">
+                <span className="text-[9px] font-black text-[#8e8e93] uppercase mb-1.5 block tracking-widest flex items-center gap-2">
+                  <Zap className="w-3 h-3 text-ios-blue" />
+                  Viral Headline Hook (On Poster)
+                </span>
                 <input 
                   type="text"
                   value={marketingCopy.headline}
                   onChange={(e) => setMarketingCopy({...marketingCopy, headline: e.target.value})}
-                  placeholder="The Master Design Hook..."
+                  placeholder="The Elite Hook..."
                   className="w-full bg-transparent text-[14px] lg:text-[15px] font-extrabold focus:outline-none placeholder:opacity-30"
                 />
               </div>
+
+              <div className="glass-card rounded-ios p-4 lg:p-5 relative group">
+                <span className="text-[9px] font-black text-[#8e8e93] uppercase mb-1.5 block tracking-widest flex items-center gap-2">
+                  <Megaphone className="w-3 h-3 text-purple-500" />
+                  Social Body Copy (Not in Poster)
+                </span>
+                <textarea 
+                  value={marketingCopy.bodyCopy}
+                  onChange={(e) => setMarketingCopy({...marketingCopy, bodyCopy: e.target.value})}
+                  placeholder="Elite social media caption..."
+                  className="w-full bg-transparent text-[13px] font-medium focus:outline-none placeholder:opacity-30 min-h-[120px] resize-none ios-scrollbar pr-8"
+                />
+                {marketingCopy.bodyCopy && (
+                  <button 
+                    onClick={copyBodyToClipboard}
+                    className="absolute bottom-4 right-4 p-2 bg-ios-blue/10 hover:bg-ios-blue/20 rounded-full transition-all text-ios-blue active:scale-90"
+                    title="Copy to Clipboard"
+                  >
+                    {copiedBody ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                  </button>
+                )}
+              </div>
               
-              <div className="glass-card rounded-ios p-4 lg:p-5">
-                <span className="text-[9px] font-black text-[#8e8e93] uppercase mb-1.5 block tracking-widest">Call to Action (CTA)</span>
+              <div className="glass-card rounded-ios p-4 lg:p-5 group">
+                <span className="text-[9px] font-black text-[#8e8e93] uppercase mb-1.5 block tracking-widest flex items-center gap-2">
+                  <RefreshCw className="w-3 h-3 text-ios-blue" />
+                  Call to Action (On Poster)
+                </span>
                 <input 
                   type="text"
                   value={marketingCopy.cta}
                   onChange={(e) => setMarketingCopy({...marketingCopy, cta: e.target.value})}
-                  placeholder="e.g., Shop Now, Limited Edition..."
+                  placeholder="e.g., Secure Yours Now..."
                   className="w-full bg-transparent text-[14px] lg:text-[15px] font-extrabold text-ios-blue focus:outline-none placeholder:opacity-30"
-                />
-              </div>
-
-              {/* Caption field kept for social/metadata but excluded from generatePoster */}
-              <div className="glass-card rounded-ios p-4 lg:p-5 opacity-60">
-                <span className="text-[9px] font-black text-[#8e8e93] uppercase mb-1.5 block tracking-widest">Social Meta Copy (Not in Poster)</span>
-                <textarea 
-                  value={marketingCopy.caption}
-                  onChange={(e) => setMarketingCopy({...marketingCopy, caption: e.target.value})}
-                  placeholder="Optional supporting story..."
-                  className="w-full bg-transparent text-[12px] lg:text-[13px] leading-relaxed min-h-[50px] resize-none focus:outline-none placeholder:opacity-30 font-medium"
                 />
               </div>
             </div>
           </section>
 
-          {/* Section 04: Resolution Matrix - Standardised h-24 */}
+          {/* Section 04: Resolution Matrix */}
           <section className="animate-pro-reveal" style={{ animationDelay: '0.3s' }}>
             <h2 className="sidebar-section-title">04 Resolution Matrix</h2>
             <div className="ratio-grid">
@@ -428,26 +512,49 @@ const App: React.FC = () => {
                     aspectRatio === option.label 
                       ? 'bg-ios-blue/10 border-ios-blue shadow-lg' 
                       : 'glass-card border-transparent hover:border-ios-blue/30'
-                  } group active:scale-95`}
-                  title={`${option.pixels} pixels`}
+                  } group active:scale-95 relative overflow-hidden`}
                 >
-                  <div className="flex items-center gap-2 mb-1 lg:gap-2.5">
+                  <div className="flex items-center gap-2 mb-1 lg:gap-2.5 z-10">
                     <div className={`${aspectRatio === option.label ? 'text-ios-blue' : 'text-[#8e8e93]'} group-hover:scale-110 transition-transform`}>
                       {option.icon}
                     </div>
                     <span className={`text-[11px] lg:text-[12px] font-bold truncate ${aspectRatio === option.label ? 'text-ios-blue' : 'opacity-80'}`}>
-                      {option.label.split(' (')[0]}
+                      {option.label === 'Custom' ? 'Custom Size' : option.label.split(' (')[0]}
                     </span>
                   </div>
-                  <span className="text-[9px] text-[#8e8e93] font-black opacity-60 uppercase tracking-tighter">
-                    {option.label.match(/\((.*?)\)/)?.[1]}
+                  <span className="text-[9px] text-[#8e8e93] font-black opacity-60 uppercase tracking-tighter z-10">
+                    {option.label === 'Custom' ? `${customWidth}x${customHeight}` : option.label.match(/\((.*?)\)/)?.[1]}
                   </span>
                 </button>
               ))}
             </div>
+            
+            {aspectRatio === 'Custom' && (
+              <div className="mt-4 p-5 glass-card rounded-ios animate-pro-reveal flex items-center gap-4">
+                <div className="flex-1">
+                  <span className="text-[9px] font-black text-[#8e8e93] uppercase mb-1.5 block tracking-widest">Width (px)</span>
+                  <input 
+                    type="number" 
+                    value={customWidth} 
+                    onChange={(e) => setCustomWidth(parseInt(e.target.value) || 0)} 
+                    className="w-full bg-transparent text-[14px] font-bold focus:outline-none border-b border-ios-blue/30 pb-1"
+                  />
+                </div>
+                <div className="text-[#8e8e93] font-black text-[10px] mt-4">×</div>
+                <div className="flex-1">
+                  <span className="text-[9px] font-black text-[#8e8e93] uppercase mb-1.5 block tracking-widest">Height (px)</span>
+                  <input 
+                    type="number" 
+                    value={customHeight} 
+                    onChange={(e) => setCustomHeight(parseInt(e.target.value) || 0)} 
+                    className="w-full bg-transparent text-[14px] font-bold focus:outline-none border-b border-ios-blue/30 pb-1"
+                  />
+                </div>
+              </div>
+            )}
           </section>
 
-          {/* Main Synthesis Trigger */}
+          {/* Main Action */}
           <button 
             onClick={handleGeneratePoster} 
             disabled={isGeneratingPoster || assets.length === 0 || !selectedPrompt} 
@@ -458,7 +565,7 @@ const App: React.FC = () => {
           </button>
         </aside>
 
-        {/* Cinematic Stage - Full Responsiveness */}
+        {/* Cinematic Stage */}
         <main className={`${activeTab === 'preview' ? 'flex' : 'hidden'} lg:flex flex-1 h-full flex-col items-center justify-center p-6 lg:p-20 overflow-hidden relative bg-[#f5f5f7] dark:bg-[#000000]`}>
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(0,122,255,0.04)_0%,transparent_75%)] pointer-events-none" />
 
@@ -473,7 +580,7 @@ const App: React.FC = () => {
                 <div className="w-full h-full group relative rounded-[22px] overflow-hidden">
                   <img src={finalImage} className="w-full h-full object-contain" />
                   <div className="absolute inset-0 bg-black/10 opacity-0 group-hover:opacity-100 transition-all flex items-center justify-center backdrop-blur-xl">
-                    <button onClick={() => handleDownload(finalImage!, `Export`)} className="w-20 h-20 lg:w-24 lg:h-24 bg-white/95 rounded-full flex items-center justify-center shadow-4xl active:scale-90 transition-all text-ios-blue hover:scale-110">
+                    <button onClick={() => handleDownload(finalImage!, `Master_Ad_Export`)} className="w-20 h-20 lg:w-24 lg:h-24 bg-white/95 rounded-full flex items-center justify-center shadow-4xl active:scale-90 transition-all text-ios-blue hover:scale-110">
                       <Download className="w-10 h-10 lg:w-11 lg:h-11" />
                     </button>
                   </div>
@@ -485,7 +592,7 @@ const App: React.FC = () => {
                   </div>
                   <div className="text-center">
                     <p className="text-[18px] lg:text-[22px] font-black uppercase tracking-[0.4em]">Neural Output Stage</p>
-                    <p className="text-[11px] lg:text-[13px] font-bold mt-2 opacity-60 uppercase">{aspectRatio}</p>
+                    <p className="text-[11px] lg:text-[13px] font-bold mt-2 opacity-60 uppercase">{aspectRatio === 'Custom' ? `${customWidth}x${customHeight}` : aspectRatio}</p>
                   </div>
                 </div>
               )}
@@ -519,15 +626,12 @@ const App: React.FC = () => {
                   </p>
                 </div>
               </div>
-              <div className="mt-8 lg:mt-10 px-6 py-3 bg-white/50 dark:bg-white/5 rounded-full backdrop-blur-md border border-white/20">
-                <p className="text-[10px] lg:text-[11px] font-black text-[#8e8e93] uppercase tracking-[0.2em]">Crafting Agency-Grade Commercial Asset</p>
-              </div>
             </div>
           )}
         </main>
       </div>
 
-      {/* History Slide Archive - Full Responsive */}
+      {/* History Archive */}
       {showHistory && (
         <div className="fixed inset-0 z-[500] flex">
           <div className="absolute inset-0 bg-black/40 backdrop-blur-xl transition-all duration-700" onClick={() => setShowHistory(false)} />
@@ -538,36 +642,42 @@ const App: React.FC = () => {
             </div>
             <div className="flex-1 overflow-y-auto space-y-6 lg:space-y-8 pb-32 ios-scrollbar pr-2 lg:pr-3">
               {history.length === 0 ? (
-                <div className="h-full flex flex-col items-center justify-center opacity-25 gap-8">
-                  <div className="w-20 h-20 lg:w-24 lg:h-24 rounded-full border-2 border-dashed border-[#8e8e93] flex items-center justify-center">
-                    <History className="w-8 h-8 lg:w-10 lg:h-10" />
-                  </div>
+                <div className="h-full flex flex-col items-center justify-center opacity-25 gap-8 text-center">
+                  <History className="w-12 h-12 opacity-40 mb-2" />
                   <p className="text-[16px] lg:text-[18px] font-black uppercase tracking-widest">Dock Empty</p>
                 </div>
               ) : (
                 history.map(item => (
                   <div 
                     key={item.id} 
-                    className="rounded-ios overflow-hidden glass-card cursor-pointer group hover:scale-[1.03] active:scale-[0.98] transition-all relative border border-white/10 shadow-xl" 
+                    className="rounded-ios overflow-hidden glass-card transition-all relative border border-white/10 shadow-xl group" 
                   >
-                    <div className="aspect-[16/10] relative" onClick={() => {
+                    <div className="aspect-[16/10] relative cursor-pointer" onClick={() => {
                       setFinalImage(item.imageUrl);
                       setShowHistory(false);
                       setActiveTab('preview');
                     }}>
-                      <img src={item.imageUrl} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-1000" />
+                      <img src={item.imageUrl} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700" />
                       <div className="absolute bottom-0 inset-x-0 p-4 lg:p-5 bg-black/65 backdrop-blur-2xl border-t border-white/10">
                         <p className="text-white text-[11px] lg:text-[12px] font-black truncate uppercase tracking-widest leading-tight">{item.prompt}</p>
-                        <p className="text-white/45 text-[9px] lg:text-[10px] font-bold mt-1 lg:mt-1.5 uppercase tracking-tighter">{new Date(item.timestamp).toLocaleDateString()} — {item.ratio.split(' ')[0]}</p>
+                        <p className="text-white/45 text-[9px] lg:text-[10px] font-bold mt-1 lg:mt-1.5 uppercase tracking-tighter">{new Date(item.timestamp).toLocaleDateString()} — {item.ratio === 'Custom' ? `${item.customWidth}x${item.customHeight}` : item.ratio.split(' ')[0]}</p>
                       </div>
                     </div>
-                    <button 
-                      onClick={(e) => { e.stopPropagation(); handleDownload(item.imageUrl, `Archive_Export`); }} 
-                      className="absolute top-3 right-3 lg:top-4 lg:right-4 w-9 h-9 lg:w-11 lg:h-11 bg-white/95 rounded-full flex items-center justify-center text-ios-blue shadow-3xl opacity-0 lg:group-hover:opacity-100 transition-all hover:scale-110"
-                      title="Direct Production Export"
-                    >
-                      <Download className="w-5 h-5 lg:w-6 lg:h-6" />
-                    </button>
+                    <div className="absolute top-3 right-3 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); editHistoryItem(item); }}
+                        className="w-9 h-9 bg-white rounded-full flex items-center justify-center text-ios-blue shadow-xl hover:scale-110 active:scale-90 transition-all"
+                        title="Re-use and Edit Prompt/Copy"
+                      >
+                        <Edit3 className="w-5 h-5" />
+                      </button>
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); handleDownload(item.imageUrl, `Archive`); }} 
+                        className="w-9 h-9 bg-white rounded-full flex items-center justify-center text-ios-blue shadow-xl hover:scale-110 active:scale-90 transition-all"
+                      >
+                        <Download className="w-5 h-5" />
+                      </button>
+                    </div>
                   </div>
                 ))
               )}
@@ -579,31 +689,25 @@ const App: React.FC = () => {
       {/* Global Pro Alert */}
       {error && (
         <div className="fixed inset-0 z-[1000] flex items-center justify-center p-6 bg-black/50 backdrop-blur-3xl">
-          <div className="w-full max-w-[340px] glass-card rounded-ios-lg overflow-hidden flex flex-col items-center text-center shadow-4xl animate-pro-reveal border border-white/10">
-            <div className="p-8">
-              <div className="w-16 h-16 bg-red-500/10 rounded-full flex items-center justify-center mb-5 mx-auto">
-                <AlertCircle className="w-9 h-9 text-red-500" />
-              </div>
-              <h3 className="text-[20px] lg:text-[22px] font-black mb-2 tracking-tight">Studio Alert</h3>
-              <p className="text-[13px] lg:text-[14px] leading-relaxed text-[#8e8e93] font-bold">{error}</p>
+          <div className="w-full max-w-[420px] glass-card rounded-ios-lg overflow-hidden flex flex-col items-center text-center shadow-4xl border border-white/10 p-8 animate-pro-reveal">
+            <div className="w-16 h-16 bg-red-500/10 rounded-full flex items-center justify-center mb-5">
+              <AlertCircle className="w-9 h-9 text-red-500" />
             </div>
-            <button onClick={() => setError(null)} className="w-full h-15 border-t border-black/5 dark:border-white/5 text-[16px] lg:text-[17px] font-black text-ios-blue active:bg-black/5 hover:bg-ios-blue hover:text-white transition-all">Dismiss</button>
+            <h3 className="text-[20px] font-black mb-2 tracking-tight">Studio System Alert</h3>
+            <p className="text-[13px] leading-relaxed text-[#8e8e93] font-bold mb-6">{error}</p>
+            <button onClick={() => setError(null)} className="w-full h-12 bg-ios-blue text-white rounded-ios font-black active:scale-95 transition-all shadow-lg">Acknowledged</button>
           </div>
         </div>
       )}
 
-      {/* Mobile Tab Bridge - iPhone Dock Optimized */}
+      {/* Mobile Nav Bridge */}
       <nav className="lg:hidden h-24 glass-nav flex items-center justify-around fixed bottom-0 w-full z-[400] pb-8 border-t border-black/[0.05]">
         <button onClick={() => setActiveTab('studio')} className={`flex flex-col items-center gap-1.5 transition-all w-1/2 ${activeTab === 'studio' ? 'text-ios-blue' : 'text-[#8e8e93]'}`}>
-          <div className={`p-2.5 rounded-full ${activeTab === 'studio' ? 'bg-ios-blue/10 scale-125' : ''} transition-all`}>
-            <Layers className="w-6 h-6" />
-          </div>
+          <Layers className="w-6 h-6" />
           <span className="text-[10px] font-black uppercase tracking-tighter">Studio</span>
         </button>
         <button onClick={() => setActiveTab('preview')} className={`flex flex-col items-center gap-1.5 transition-all w-1/2 ${activeTab === 'preview' ? 'text-ios-blue' : 'text-[#8e8e93]'}`}>
-          <div className={`p-2.5 rounded-full ${activeTab === 'preview' ? 'bg-ios-blue/10 scale-125' : ''} transition-all`}>
-            <Monitor className="w-6 h-6" />
-          </div>
+          <Monitor className="w-6 h-6" />
           <span className="text-[10px] font-black uppercase tracking-tighter">Preview</span>
         </button>
       </nav>

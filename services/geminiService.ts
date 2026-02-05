@@ -13,9 +13,9 @@ const getAI = () => {
 };
 
 /**
- * UTILITY: Wrap a function with retry logic specifically for 429 (Quota) errors
+ * UTILITY: Enhanced retry logic for Gemini Quota (429) errors.
  */
-const withRetry = async <T>(fn: () => Promise<T>, retries = 2, delay = 5000): Promise<T> => {
+const withRetry = async <T>(fn: () => Promise<T>, retries = 5, delay = 15000): Promise<T> => {
   try {
     return await fn();
   } catch (error: any) {
@@ -28,9 +28,9 @@ const withRetry = async <T>(fn: () => Promise<T>, retries = 2, delay = 5000): Pr
       errorString.includes("resource_exhausted");
 
     if (retries > 0 && isQuotaError) {
-      console.warn(`[Studio API] Quota reached. Retrying in ${delay}ms...`);
+      console.warn(`[Studio API] Quota reached. Retrying in ${delay}ms... Attempts left: ${retries}`);
       await new Promise(resolve => setTimeout(resolve, delay));
-      return withRetry(fn, retries - 1, delay * 2);
+      return withRetry(fn, retries - 1, delay * 1.5);
     }
     throw error;
   }
@@ -38,9 +38,16 @@ const withRetry = async <T>(fn: () => Promise<T>, retries = 2, delay = 5000): Pr
 
 const sanitizeError = (err: any): string => {
   const errorString = JSON.stringify(err).toLowerCase();
+  
+  // Specific handling for Permission Denied which is common with Gemini 2.5 series
+  if (errorString.includes("permission_denied") || errorString.includes("403")) {
+    return "ACCESS_DENIED: Background removal requires an API key from a PAID Google Cloud Project with the Gemini API enabled. Please ensure your project has billing enabled at ai.google.dev/gemini-api/docs/billing.";
+  }
+  
   if (errorString.includes("429") || errorString.includes("quota")) {
     return "GEMINI_QUOTA: API capacity reached. Retrying automatically...";
   }
+  
   return err.message || "STUDIO_ERROR: Something went wrong with the AI engine.";
 };
 
@@ -98,11 +105,11 @@ export const analyzeAssets = async (assets: Asset[]): Promise<AnalysisResult> =>
         contents: {
           parts: [
             ...parts,
-            { text: "SENIOR ART DIRECTOR INTELLIGENT SCAN: Analyze the visual DNA of all provided assets. These may include primary products, human models, background environments, pets, animals, or lifestyle elements. Your goal is to synthesize a cohesive, professional story connecting them all. Identify material textures (brushed metal, silk, fur), lighting conditions, and brand identity. Generate a 'suggestedPrompt' that acts as a technical creative brief. It must describe an elite photography scene where these elements interact logically (e.g., 'A model in high-fashion urban wear holding the [Product] while walking a [Pet] through a minimalist architectural lobby'). Use high-end specs (85mm prime, Phase One XF, cinematic God-rays). RETURN JSON ONLY." }
+            { text: "SENIOR ART DIRECTOR INTELLIGENT SCAN: Analyze visual DNA. Synthesize a luxury-grade suggestedPrompt. IMPORTANT: DO NOT include any text or branding instructions. Focus strictly on visual composition and lighting. RETURN JSON ONLY." }
           ]
         },
         config: {
-          systemInstruction: "You are an Elite Global Creative Director. You transform varied visual assets into intelligent, harmonious design directives.",
+          systemInstruction: "You are an Elite Global Creative Director. Output JSON identifying subjects and a premium photographic suggestedPrompt with NO mention of text or copy.",
           responseMimeType: "application/json",
           responseSchema: {
             type: Type.OBJECT,
@@ -132,12 +139,9 @@ export const refinePrompt = async (prompt: string): Promise<string> => {
       const ai = getAI();
       const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
-        contents: `USER INPUT: "${prompt}". 
-        ACT AS: Head of Design & Senior Art Director. 
-        TASK: Refine this into a professional, technically precise advertising directive. 
-        INSTRUCTIONS: Use expert terminology for lighting (e.g., Rembrandt, Chiaroscuro), camera optics (e.g., f/1.8, bokeh depth), and high-end composition. Ensure the prompt describes an elite-quality commercial shoot suitable for a global luxury brand.`,
+        contents: `USER INPUT: "${prompt}". Refine into technically precise, elite advertising directive. NO TEXT INSTRUCTIONS.`,
         config: {
-          systemInstruction: "You are the Head of Design at a world-class agency. Refine user ideas into professional art-directed prompts. ONLY OUTPUT THE REFINED TEXT.",
+          systemInstruction: "Refine prompts with high-end photographic terms. NO TEXT OR TYPOGRAPHY. ONLY OUTPUT TEXT.",
           safetySettings: SAFETY_SETTINGS
         }
       });
@@ -154,22 +158,18 @@ export const generateMarketingCopy = async (prompt: string): Promise<MarketingCo
       const ai = getAI();
       const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
-        contents: `CREATIVE VISION: "${prompt}". 
-        ROLE: Senior Copywriter & Social Media Strategist. 
-        TASK: Generate viral, high-conversion marketing copy. 
-        TONE: Sophisticated, persuasive, luxury-oriented. 
-        OUTPUT: JSON with headline, caption, and cta.`,
+        contents: `VISION: "${prompt}". Generate excellent Hook, Social Body Copy, and CTA. JSON ONLY.`,
         config: {
-          systemInstruction: "You are a World-Class Copywriter. Your copy is elegant and high-impact. The CTA should be strong and punchy.",
+          systemInstruction: "You are a World-Class Creative Copywriter. Produce high-end copy. RETURN JSON ONLY.",
           responseMimeType: "application/json",
           responseSchema: {
             type: Type.OBJECT,
             properties: {
               headline: { type: Type.STRING },
-              caption: { type: Type.STRING },
+              bodyCopy: { type: Type.STRING },
               cta: { type: Type.STRING }
             },
-            required: ["headline", "caption", "cta"]
+            required: ["headline", "bodyCopy", "cta"]
           },
           safetySettings: SAFETY_SETTINGS
         }
@@ -190,7 +190,7 @@ export const isolateSubject = async (asset: Asset): Promise<{ base64: string, ur
         contents: {
           parts: [
             { inlineData: { data: asset.base64, mimeType: asset.mimeType } },
-            { text: "Precision extraction: Isolate the primary product subject with perfect edge detection. Remove all background. Output on #FFFFFF canvas." }
+            { text: "CORE DIRECTIVE: Remove the background with absolute precision. Isolate only the primary subject. The output MUST be a PNG image with a fully transparent (alpha) background. Ensure edges are crisp and clean for high-end studio compositing. Do not add any shadows or backgrounds." }
           ]
         },
         config: { safetySettings: SAFETY_SETTINGS }
@@ -201,10 +201,10 @@ export const isolateSubject = async (asset: Asset): Promise<{ base64: string, ur
       for (const part of parts) {
         if (part.inlineData) { isolatedBase64 = part.inlineData.data; break; }
       }
-      if (!isolatedBase64) throw new Error("ISO_FAIL: Extraction failed.");
+      if (!isolatedBase64) throw new Error("ISO_FAIL");
       return { base64: isolatedBase64, url: `data:image/png;base64,${isolatedBase64}` };
     } catch (err) {
-      throw err;
+      throw new Error(sanitizeError(err));
     }
   });
 };
@@ -214,7 +214,9 @@ export const generatePoster = async (
   prompt: string, 
   ratio: AspectRatio,
   bgRemoval: boolean,
-  marketingCopy?: MarketingCopy | null
+  marketingCopy?: MarketingCopy | null,
+  customWidth?: number,
+  customHeight?: number
 ): Promise<string> => {
   return withRetry(async () => {
     try {
@@ -224,44 +226,43 @@ export const generatePoster = async (
         return { inlineData: { data, mimeType: 'image/png' } };
       });
 
-      const supportedRatios: Record<string, string> = {
+      const ratioMap: Record<string, string> = {
         'Instagram Square (1:1)': '1:1', 
         'Instagram Portrait (4:5)': '3:4', 
         'Instagram Story (9:16)': '9:16', 
         'Facebook Feed (16:9)': '16:9', 
         'Facebook Cover (16:9)': '16:9',
         'YouTube Thumbnail (16:9)': '16:9',
-        'LinkedIn Feed (4:5)': '3:4',
-        'LinkedIn Header (16:9)': '16:9'
+        'LinkedIn Feed (4:5)': '3:4'
       };
 
-      const targetRatio = supportedRatios[ratio] || '1:1';
+      let targetRatio = ratioMap[ratio] || '1:1';
+      let sizeInstruction = '';
+
+      if (ratio === 'Custom' && customWidth && customHeight) {
+        const ar = customWidth / customHeight;
+        sizeInstruction = `PRODUCTION SIZE: ${customWidth}x${customHeight} pixels.`;
+        if (ar === 1) targetRatio = '1:1';
+        else if (ar < 1) targetRatio = ar <= 0.6 ? '9:16' : '3:4';
+        else targetRatio = ar >= 1.5 ? '16:9' : '4:3';
+      }
       
       let brandingText = '';
-      if (marketingCopy) {
-        // STRICT REQUIREMENT: Only include Headline and CTA. Exclude Caption.
-        brandingText = `
-        MARKETING ELEMENTS TO RENDER:
-        - HEADLINE: "${marketingCopy.headline || ''}"
-        - CALL TO ACTION (CTA): "${marketingCopy.cta || ''}"
-        - IMPORTANT: DO NOT include any supporting caption or body text in the actual poster visual.
-        `;
+      const hasHeadline = marketingCopy?.headline?.trim();
+      const hasCTA = marketingCopy?.cta?.trim();
+
+      if (hasHeadline || hasCTA) {
+        brandingText = `BRANDING: Integrate Headline: "${hasHeadline || ''}" and CTA: "${hasCTA || ''}" into the composition. Use product-matched typography.`;
+      } else {
+        brandingText = `STRICT REQUIREMENT: NO TEXT. DO NOT render any written words. Pure visual output only.`;
       }
 
       const finalPrompt = `
-      VISION: ${prompt}. 
+      CREATIVE VISION: ${prompt}. 
       ${brandingText}
+      ${sizeInstruction}
 
-      ROLE: Senior Art Director at a World-Class Agency.
-      TASK: Composite the provided assets into an elite, photorealistic commercial ad poster.
-      
-      ARTISTIC DIRECTIVES:
-      1. INTEGRATE BRANDING: Render the Headline and the CTA into the design. The CTA should look like a premium, integrated element (e.g., a sophisticated button or high-end typography).
-      2. COLOR HARMONY: All text and graphic elements must use the product's exact color palette and material finishes found in the assets.
-      3. TYPOGRAPHY: Use only elite-level fonts that match the product's brand identity. Ensure text is legible yet sophisticated.
-      4. COMPOSITION: Place elements to guide the eye toward the product and the CTA. The text must feel part of the high-end photographic composition, not an overlay.
-      5. FINISH: Commercial-grade color grading, realistic contact shadows, and perfect exposure.
-      
+      TASK: Composite provided assets into an elite commercial poster.
       FORMAT: ${targetRatio}`;
 
       const response = await ai.models.generateContent({
@@ -284,7 +285,7 @@ export const generatePoster = async (
         }
       }
       
-      if (!imageUrl) throw new Error("GEN_FAIL: Poster generation yielded no visual.");
+      if (!imageUrl) throw new Error("GEN_FAIL");
       return imageUrl;
     } catch (error) {
       throw new Error(sanitizeError(error));
