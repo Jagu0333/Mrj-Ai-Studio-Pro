@@ -82,7 +82,7 @@ const App: React.FC = () => {
   
   const desiredFullscreenRef = useRef(false);
 
-  // Decoupled processing states: block only core creative generation, not uploads
+  // Decoupled processing states: block only core creative generation
   const allAssets = [subjectAsset, contextAsset].filter(Boolean) as Asset[];
   const isGenerating = isProcessingCreative || isRefining || isGeneratingPoster;
 
@@ -119,6 +119,18 @@ const App: React.FC = () => {
     return () => clearInterval(interval);
   }, [isGeneratingPoster]);
 
+  // Automatically trigger background removal if toggle is flipped ON for existing assets
+  useEffect(() => {
+    if (bgRemovalEnabled) {
+      if (subjectAsset && !subjectAsset.isolatedBase64 && subjectAsset.status !== 'processing') {
+        handleIsolateSubject(subjectAsset, true);
+      }
+      if (contextAsset && !contextAsset.isolatedBase64 && contextAsset.status !== 'processing') {
+        handleIsolateSubject(contextAsset, false);
+      }
+    }
+  }, [bgRemovalEnabled]);
+
   const toggleFullscreen = useCallback(async () => {
     try {
       const elem = document.documentElement;
@@ -138,8 +150,8 @@ const App: React.FC = () => {
     console.log(`[Action] Triggering Background Removal for ${isSubject ? 'Subject' : 'Context'}`);
     
     const updateAsset = (status: any, extra = {}) => {
-      if (isSubject) setSubjectAsset(prev => prev ? { ...prev, status, ...extra } : null);
-      else setContextAsset(prev => prev ? { ...prev, status, ...extra } : null);
+      if (isSubject) setSubjectAsset(prev => prev && prev.id === asset.id ? { ...prev, status, ...extra } : prev);
+      else setContextAsset(prev => prev && prev.id === asset.id ? { ...prev, status, ...extra } : prev);
     };
 
     updateAsset('processing');
@@ -153,7 +165,7 @@ const App: React.FC = () => {
   };
 
   const processFile = async (file: File, type: AssetType) => {
-    if (isGenerating) return; // Only block if we are in final generation phases
+    // We removed the block here so users can always replace assets
     setError(null);
     try {
       const reader = new FileReader();
@@ -213,7 +225,7 @@ const App: React.FC = () => {
   const handleGeneratePoster = async () => {
     if (isGenerating || allAssets.length === 0 || !selectedPrompt) return;
     
-    // Safety: ensure all assets that ARE processing finish first, or just use the current state
+    // Safety: ensure all assets that ARE processing finish first
     const isStillIsolating = allAssets.some(a => a.status === 'processing');
     if (isStillIsolating) {
         setError("Please wait for background removal to complete before generating.");
@@ -303,7 +315,7 @@ const App: React.FC = () => {
             <div className="grid grid-cols-2 gap-4">
               {/* Main Subject Slot */}
               <div className="relative group">
-                <label className={`h-32 rounded-ios glass-card flex flex-col items-center justify-center gap-2 cursor-pointer hover:bg-white/90 dark:hover:bg-white/10 transition-all active:scale-95 overflow-hidden ${isGenerating ? 'opacity-30 pointer-events-none' : ''}`}>
+                <label className={`h-32 rounded-ios glass-card flex flex-col items-center justify-center gap-2 cursor-pointer hover:bg-white/90 dark:hover:bg-white/10 transition-all active:scale-95 overflow-hidden`}>
                   <input type="file" onChange={(e) => e.target.files?.[0] && processFile(e.target.files[0], AssetType.PRODUCT)} className="hidden" />
                   {subjectAsset ? (
                     <div className="absolute inset-0 w-full h-full">
@@ -313,7 +325,7 @@ const App: React.FC = () => {
                                 <Loader2 className="w-8 h-8 text-white animate-spin" />
                             </div>
                         )}
-                        <button onClick={(e) => { e.preventDefault(); setSubjectAsset(null); }} className="absolute top-2 right-2 w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all"><X className="w-4 h-4" /></button>
+                        <button onClick={(e) => { e.preventDefault(); setSubjectAsset(null); }} className="absolute top-2 right-2 w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all z-10"><X className="w-4 h-4" /></button>
                     </div>
                   ) : (
                     <>
@@ -326,7 +338,7 @@ const App: React.FC = () => {
 
               {/* Context Slot */}
               <div className="relative group">
-                <label className={`h-32 rounded-ios glass-card flex flex-col items-center justify-center gap-2 cursor-pointer hover:bg-white/90 dark:hover:bg-white/10 transition-all active:scale-95 overflow-hidden ${isGenerating ? 'opacity-30 pointer-events-none' : ''}`}>
+                <label className={`h-32 rounded-ios glass-card flex flex-col items-center justify-center gap-2 cursor-pointer hover:bg-white/90 dark:hover:bg-white/10 transition-all active:scale-95 overflow-hidden`}>
                   <input type="file" onChange={(e) => e.target.files?.[0] && processFile(e.target.files[0], AssetType.MODEL)} className="hidden" />
                   {contextAsset ? (
                     <div className="absolute inset-0 w-full h-full">
@@ -336,7 +348,7 @@ const App: React.FC = () => {
                                 <Loader2 className="w-8 h-8 text-white animate-spin" />
                             </div>
                         )}
-                        <button onClick={(e) => { e.preventDefault(); setContextAsset(null); }} className="absolute top-2 right-2 w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all"><X className="w-4 h-4" /></button>
+                        <button onClick={(e) => { e.preventDefault(); setContextAsset(null); }} className="absolute top-2 right-2 w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all z-10"><X className="w-4 h-4" /></button>
                     </div>
                   ) : (
                     <>
@@ -460,14 +472,16 @@ const App: React.FC = () => {
             )}
           </section>
 
-          <button 
-            onClick={handleGeneratePoster} 
-            disabled={isGenerating || allAssets.length === 0 || !selectedPrompt} 
-            className="mt-4 h-14 ios-btn-primary rounded-full text-[15px] font-black flex items-center justify-center gap-3 active:scale-95 shadow-xl disabled:opacity-30"
-          >
-            {isGeneratingPoster ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Zap className="w-5 h-5 fill-white" />}
-            Generate Masterpiece
-          </button>
+          <div className="pb-12">
+            <button 
+              onClick={handleGeneratePoster} 
+              disabled={isGenerating || allAssets.length === 0 || !selectedPrompt} 
+              className="w-full h-14 ios-btn-primary rounded-full text-[15px] font-black flex items-center justify-center gap-3 active:scale-95 shadow-xl disabled:opacity-30"
+            >
+              {isGeneratingPoster ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Zap className="w-5 h-5 fill-white" />}
+              Generate Masterpiece
+            </button>
+          </div>
         </aside>
 
         {/* MAIN PREVIEW AREA */}
@@ -524,7 +538,8 @@ const App: React.FC = () => {
         </main>
       </div>
 
-      <nav className="h-20 glass-nav flex items-center justify-around fixed bottom-0 w-full z-[400] border-t border-black/[0.05] dark:border-white/[0.05]">
+      {/* MOBILE ONLY NAVIGATION - Hide on lg screens to prevent button obstruction */}
+      <nav className="h-20 glass-nav flex items-center justify-around fixed bottom-0 w-full z-[400] border-t border-black/[0.05] dark:border-white/[0.05] lg:hidden">
         <button 
           onClick={() => setActiveTab('studio')} 
           className={`flex flex-col items-center gap-1.5 transition-all w-24 ${activeTab === 'studio' ? 'text-ios-blue scale-110' : 'text-ios-secondaryLabel opacity-40 hover:opacity-100'}`}

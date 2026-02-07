@@ -4,7 +4,6 @@ import { Asset, AnalysisResult, MarketingCopy, AspectRatio } from "../types";
 
 /**
  * GLOBAL API CALL COUNTER
- * Tracks every call to the Gemini model for debugging purposes.
  */
 let apiCallCount = 0;
 
@@ -15,7 +14,6 @@ const logApiCall = () => {
 
 /**
  * GLOBAL CLIENT-SIDE RATE LIMITER
- * Persists in memory during the session.
  */
 let lastImageRequestTime = 0;
 let lastTextRequestTime = 0;
@@ -49,9 +47,7 @@ const getAI = () => {
 };
 
 /**
- * STRICT ONE-SHOT ERROR HANDLING
- * All retry, backoff, and queueing logic is removed.
- * Returns immediate failure messages.
+ * ERROR SANITIZATION
  */
 const sanitizeError = (err: any): string => {
   if (err.message === "Please wait before generating again.") {
@@ -105,7 +101,7 @@ export const compressImage = (base64: string, mimeType: string, maxDim: number =
 };
 
 /**
- * CONSOLIDATED CREATIVE ACTION: Analyzes assets and generates marketing copy in ONE call.
+ * ANALYZE ASSETS FOR CREATIVE INTELLIGENCE
  */
 export const getCreativeIntelligence = async (assets: Asset[]): Promise<{ analysis: AnalysisResult, copy: MarketingCopy }> => {
   try {
@@ -122,7 +118,7 @@ export const getCreativeIntelligence = async (assets: Asset[]): Promise<{ analys
         ]
       },
       config: {
-        systemInstruction: "You are the Executive Creative Director. Output Analysis and Marketing Copy as a single JSON object. Preserve 100% asset fidelity in prompts. These are the EXACT assets that must be used in the final composition.",
+        systemInstruction: "You are the Executive Creative Director. Output Analysis and Marketing Copy as a single JSON object. These assets are REQUIRED for the final design.",
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
@@ -159,6 +155,9 @@ export const getCreativeIntelligence = async (assets: Asset[]): Promise<{ analys
   }
 };
 
+/**
+ * REFINE DIRECTIVE
+ */
 export const refinePrompt = async (prompt: string, assets: Asset[]): Promise<string> => {
   try {
     enforceRateLimit('text');
@@ -170,7 +169,7 @@ export const refinePrompt = async (prompt: string, assets: Asset[]): Promise<str
       contents: {
         parts: [
           ...assetParts,
-          { text: `HEAD OF DESIGN REFINEMENT: Enhance this vision: "${prompt}". Focus on cinematic material physics. ONLY output the refined prompt text. Ensure the original objects provided in the parts are the central focus.` }
+          { text: `HEAD OF DESIGN REFINEMENT: Enhance this vision: "${prompt}". Focus on cinematic material physics. ONLY output the refined prompt text. Ensure the original assets provided in the parts are the central focus.` }
         ]
       },
       config: { 
@@ -184,6 +183,9 @@ export const refinePrompt = async (prompt: string, assets: Asset[]): Promise<str
   }
 };
 
+/**
+ * BG REMOVAL API
+ */
 export const isolateSubject = async (asset: Asset): Promise<{ base64: string, url: string }> => {
   try {
     enforceRateLimit('image');
@@ -194,7 +196,7 @@ export const isolateSubject = async (asset: Asset): Promise<{ base64: string, ur
       contents: {
         parts: [
           { inlineData: { data: asset.base64, mimeType: asset.mimeType } },
-          { text: "PRECISION ISOLATION: Remove the background perfectly. Output a transparent PNG of the main subject. Do not change the subject's appearance, only remove the surroundings." }
+          { text: "PRECISION ISOLATION: Remove the background perfectly. Output a transparent PNG of the main subject only. Maintain original subject fidelity." }
         ]
       },
       config: { safetySettings: SAFETY_SETTINGS }
@@ -210,8 +212,7 @@ export const isolateSubject = async (asset: Asset): Promise<{ base64: string, ur
 };
 
 /**
- * GENERATE MASTERPIECE
- * Maps UI aspect ratios to Gemini API supported formats.
+ * GENERATE MASTERPIECE COMPOSITION
  */
 export const generatePoster = async (
   assets: Asset[], 
@@ -225,12 +226,17 @@ export const generatePoster = async (
     enforceRateLimit('image');
     logApiCall();
     const ai = getAI();
-    const assetParts = assets.map((a) => {
+    
+    // Explicitly describe each asset part to the model
+    const assetParts = assets.map((a, index) => {
       const isUsingIsolated = bgRemoval && a.isolatedBase64;
       const data = isUsingIsolated ? a.isolatedBase64 : a.base64;
       const mimeType = isUsingIsolated ? 'image/png' : a.mimeType;
-      return { inlineData: { data, mimeType } };
-    });
+      return [
+        { inlineData: { data, mimeType } },
+        { text: `STUDIO ASSET ${index + 1} (${a.type.toUpperCase()}): Use this exact visual object in the composition.` }
+      ];
+    }).flat();
 
     const ratioMap: Record<string, string> = {
       'Instagram Square (1:1)': '1:1', 
@@ -255,14 +261,14 @@ export const generatePoster = async (
     }
 
     const brandingText = (marketingCopy?.headline?.trim() || marketingCopy?.cta?.trim()) 
-      ? `STRICT BRANDING: Integrate Headline: "${marketingCopy?.headline || ''}" and CTA: "${marketingCopy?.cta || ''}" using premium ad typography.` 
+      ? `STRICT BRANDING: Integrate Headline: "${marketingCopy?.headline || ''}" and CTA: "${marketingCopy?.cta || ''}" using premium typography.` 
       : `STRICT REQUIREMENT: NO TEXT. Composition only.`;
 
-    // Stronger system directive for fidelity
-    const finalPrompt = `ASSET FIDELITY DIRECTIVE: You MUST use the visual features (textures, colors, shapes) of the provided image parts EXACTLY as they appear. 
-    SCENE: ${prompt}. 
+    // Strongest possible directive for asset usage
+    const finalPrompt = `ASSET FIDELITY MANDATE: You MUST include ALL visual features from the provided studio asset images. 
+    SCENE DIRECTIVE: ${prompt}. 
     ${brandingText} 
-    COMPOSITION: Professional advertising photography with cinematic lighting. Ensure the product and environment from the parts are merged seamlessly while maintaining their original identity. 
+    COMPOSITION REQUIREMENTS: High-end professional advertising photography. Merge the product subject and the environment/model context seamlessly. Do not hallucinate generic replacements; use the EXACT assets provided in the parts.
     FORMAT: ${targetRatio}`;
 
     const response = await ai.models.generateContent({
@@ -277,7 +283,7 @@ export const generatePoster = async (
     let imageUrl = '';
     const parts = response.candidates?.[0]?.content?.parts || [];
     for (const p of parts) { if (p.inlineData) { imageUrl = `data:image/png;base64,${p.inlineData.data}`; break; } }
-    if (!imageUrl) throw new Error("GEN_FAIL: Could not extract image.");
+    if (!imageUrl) throw new Error("GEN_FAIL: Composition failed to yield an image.");
     return imageUrl;
   } catch (error) { 
     throw new Error(sanitizeError(error)); 
