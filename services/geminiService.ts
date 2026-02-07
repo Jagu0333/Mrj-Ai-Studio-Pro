@@ -214,14 +214,14 @@ export const isolateSubject = async (asset: Asset): Promise<{ base64: string, ur
 /**
  * GENERATE MASTERPIECE
  * Maps UI aspect ratios to Gemini API supported formats.
- * Custom maps to 16:9 as per the 1920x1080 UI label.
  */
 export const generatePoster = async (
   assets: Asset[], 
   prompt: string, 
   ratio: AspectRatio,
   bgRemoval: boolean,
-  marketingCopy?: MarketingCopy | null
+  marketingCopy?: MarketingCopy | null,
+  customDims?: { width: number, height: number }
 ): Promise<string> => {
   try {
     enforceRateLimit('image');
@@ -239,11 +239,22 @@ export const generatePoster = async (
       'Facebook Feed (16:9)': '16:9', 
       'Facebook Cover (16:9)': '16:9',
       'YouTube Thumbnail (16:9)': '16:9',
-      'LinkedIn Feed (4:5)': '3:4',
-      'Custom': '16:9' 
+      'LinkedIn Feed (4:5)': '3:4'
     };
 
-    let targetRatio = ratioMap[ratio] || '1:1';
+    let targetRatio = '1:1';
+    if (ratio === 'Custom' && customDims) {
+      const val = customDims.width / customDims.height;
+      // Find closest supported ratio
+      if (val >= 1.7) targetRatio = '16:9';
+      else if (val >= 1.3) targetRatio = '4:3';
+      else if (val >= 0.9) targetRatio = '1:1';
+      else if (val >= 0.7) targetRatio = '3:4';
+      else targetRatio = '9:16';
+    } else {
+      targetRatio = ratioMap[ratio] || '1:1';
+    }
+
     const brandingText = (marketingCopy?.headline?.trim() || marketingCopy?.cta?.trim()) 
       ? `STRICT BRANDING: Integrate Headline: "${marketingCopy?.headline || ''}" and CTA: "${marketingCopy?.cta || ''}" using premium ad typography.` 
       : `STRICT REQUIREMENT: NO TEXT. Composition only.`;

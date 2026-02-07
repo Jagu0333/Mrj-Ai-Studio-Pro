@@ -64,6 +64,8 @@ const App: React.FC = () => {
   const [isProcessingCreative, setIsProcessingCreative] = useState(false);
   const [selectedPrompt, setSelectedPrompt] = useState('');
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>('Instagram Square (1:1)');
+  const [customWidth, setCustomWidth] = useState<number>(1920);
+  const [customHeight, setCustomHeight] = useState<number>(1080);
   const [marketingCopy, setMarketingCopy] = useState<MarketingCopy>({ headline: '', bodyCopy: '', cta: '' });
   const [isGeneratingPoster, setIsGeneratingPoster] = useState(false);
   const [loadingStep, setLoadingStep] = useState(0);
@@ -211,10 +213,24 @@ const App: React.FC = () => {
     setIsGeneratingPoster(true);
     setActiveTab('preview');
     try {
-      const img = await gemini.generatePoster(allAssets, selectedPrompt, aspectRatio, bgRemovalEnabled, marketingCopy);
+      const img = await gemini.generatePoster(
+        allAssets, 
+        selectedPrompt, 
+        aspectRatio, 
+        bgRemovalEnabled, 
+        marketingCopy,
+        aspectRatio === 'Custom' ? { width: customWidth, height: customHeight } : undefined
+      );
       setFinalImage(img);
       await db.saveHistoryItem({ 
-          id: Math.random().toString(36).substr(2, 9), imageUrl: img, prompt: selectedPrompt, copy: marketingCopy, ratio: aspectRatio, timestamp: Date.now() 
+          id: Math.random().toString(36).substr(2, 9), 
+          imageUrl: img, 
+          prompt: selectedPrompt, 
+          copy: marketingCopy, 
+          ratio: aspectRatio,
+          customWidth: aspectRatio === 'Custom' ? customWidth : undefined,
+          customHeight: aspectRatio === 'Custom' ? customHeight : undefined,
+          timestamp: Date.now() 
       });
       loadHistory();
     } catch (err: any) { setError(err.message); setActiveTab('studio'); }
@@ -258,7 +274,7 @@ const App: React.FC = () => {
 
       <div className="flex-1 flex flex-col lg:flex-row relative overflow-hidden">
         {/* SIDEBAR: Controls - Exactly matching Screenshots 1, 2, 4 */}
-        <aside className={`${activeTab === 'studio' ? 'flex' : 'hidden'} lg:flex w-full lg:w-[420px] h-full flex-col p-6 lg:p-8 gap-8 overflow-y-auto ios-scrollbar pb-32 border-r border-black/[0.05] dark:border-white/[0.05]`}>
+        <aside className={`${activeTab === 'studio' ? 'flex' : 'hidden'} lg:flex w-full lg:w-[420px] h-full flex-col p-6 lg:p-8 gap-8 overflow-y-auto ios-scrollbar pb-48 border-r border-black/[0.05] dark:border-white/[0.05]`}>
           
           {/* 01 STUDIO ASSETS */}
           <section className="animate-pro-reveal">
@@ -285,18 +301,6 @@ const App: React.FC = () => {
                 <span className="text-[10px] font-black uppercase tracking-widest opacity-60">CONTEXT/ENV</span>
               </label>
             </div>
-            {allAssets.length > 0 && (
-              <div className="flex gap-2 overflow-x-auto pb-2 mt-4 no-scrollbar">
-                {allAssets.map(asset => (
-                  <div key={asset.id} className="relative shrink-0 w-20 h-20 rounded-ios-sm glass-card overflow-hidden group border border-white/20">
-                    <img src={(bgRemovalEnabled && asset.isolatedUrl) ? asset.isolatedUrl : asset.url} className="w-full h-full object-cover" />
-                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-all">
-                      <button onClick={() => asset.type === AssetType.PRODUCT ? setSubjectAsset(null) : setContextAsset(null)} className="p-1.5 bg-red-500 text-white rounded-full"><X className="w-4 h-4" /></button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
           </section>
 
           {/* 02 VISION ENGINE */}
@@ -358,7 +362,7 @@ const App: React.FC = () => {
           {/* 04 RESOLUTION MATRIX */}
           <section className="animate-pro-reveal" style={{ animationDelay: '0.3s' }}>
             <h2 className="sidebar-section-title">04 RESOLUTION MATRIX</h2>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-2 gap-3 mb-6">
               {RATIO_OPTIONS.map((opt) => {
                 const Icon = opt.icon;
                 const isActive = aspectRatio === opt.label;
@@ -373,14 +377,45 @@ const App: React.FC = () => {
                       <Icon className={`w-5 h-5 ${isActive ? 'text-ios-blue' : 'text-ios-secondaryLabel opacity-60'}`} />
                       <span className={`text-[12px] font-bold ${isActive ? 'text-ios-blue' : 'text-ios-label'}`}>{opt.label.split(' (')[0]}</span>
                     </div>
-                    <span className="text-[10px] font-black text-ios-titanium opacity-60 uppercase tracking-widest">{opt.sub}</span>
+                    <span className="text-[10px] font-black text-ios-titanium opacity-60 uppercase tracking-widest">
+                      {opt.label === 'Custom' ? `${customWidth}X${customHeight}` : opt.sub}
+                    </span>
                   </button>
                 );
               })}
             </div>
+
+            {/* CUSTOM RESOLUTION INPUTS: Exactly matching the provided screenshot */}
+            {aspectRatio === 'Custom' && (
+              <div className="glass-card rounded-ios p-5 animate-pro-reveal space-y-4">
+                <div className="grid grid-cols-2 gap-6 items-end">
+                  <div>
+                    <span className="text-[9px] font-black text-ios-secondaryLabel uppercase block tracking-widest mb-2">WIDTH (PX)</span>
+                    <input 
+                      type="number" 
+                      value={customWidth} 
+                      onChange={(e) => setCustomWidth(Number(e.target.value))}
+                      className="w-full bg-transparent text-[16px] font-bold focus:outline-none border-b border-ios-blue/30 focus:border-ios-blue pb-1"
+                    />
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <span className="text-ios-secondaryLabel opacity-60">×</span>
+                    <div className="flex-1">
+                      <span className="text-[9px] font-black text-ios-secondaryLabel uppercase block tracking-widest mb-2">HEIGHT (PX)</span>
+                      <input 
+                        type="number" 
+                        value={customHeight} 
+                        onChange={(e) => setCustomHeight(Number(e.target.value))}
+                        className="w-full bg-transparent text-[16px] font-bold focus:outline-none border-b border-ios-blue/30 focus:border-ios-blue pb-1"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </section>
 
-          {/* GENERATE MASTERPIECE BUTTON: Fixed in sidebar scrolling area like Screenshot 4 */}
+          {/* GENERATE MASTERPIECE BUTTON: Fixed in sidebar area */}
           <button 
             onClick={handleGeneratePoster} 
             disabled={isAnyProcessing || allAssets.length === 0 || !selectedPrompt} 
@@ -391,9 +426,8 @@ const App: React.FC = () => {
           </button>
         </aside>
 
-        {/* MAIN PREVIEW AREA: Exactly matching Screenshots 1, 2, 3 */}
+        {/* MAIN PREVIEW AREA: Exactly matching Screenshots */}
         <main className="flex-1 h-full flex flex-col items-center justify-center p-8 lg:p-12 overflow-hidden relative bg-[#f2f2f7] dark:bg-[#1c1c1e]">
-          {/* X Button at the top like Screenshot 1 */}
           <div className="absolute top-6 left-1/2 -translate-x-1/2 z-[300]">
             <button 
                onClick={() => setFinalImage(null)}
@@ -403,7 +437,6 @@ const App: React.FC = () => {
             </button>
           </div>
 
-          {/* Right floating menu icon like Screenshot 1 */}
           <div className="absolute right-6 top-1/2 -translate-y-1/2 z-[300] hidden lg:block">
             <button className="w-10 h-10 bg-black/80 rounded-full flex items-center justify-center text-white shadow-lg">
               <Menu className="w-6 h-6" />
@@ -424,7 +457,9 @@ const App: React.FC = () => {
                 <div className="w-20 h-20 text-ios-blue/40"><Monitor className="w-full h-full" /></div>
                 <div>
                    <p className="text-[28px] font-black uppercase tracking-[0.4em] titanium-text mb-2">NEURAL OUTPUT STAGE</p>
-                   <p className="text-[12px] font-bold uppercase tracking-widest text-ios-secondaryLabel">{aspectRatio.toUpperCase()}</p>
+                   <p className="text-[12px] font-bold uppercase tracking-widest text-ios-secondaryLabel">
+                     {aspectRatio === 'Custom' ? `${customWidth}X${customHeight}` : aspectRatio.toUpperCase()}
+                   </p>
                 </div>
               </div>
             )}
@@ -445,7 +480,6 @@ const App: React.FC = () => {
         </main>
       </div>
 
-      {/* BOTTOM NAV BAR: Matches Screenshot 1 and 3 */}
       <nav className="h-20 glass-nav flex items-center justify-around fixed bottom-0 w-full z-[400] border-t border-black/[0.05] dark:border-white/[0.05]">
         <button 
           onClick={() => setActiveTab('studio')} 
@@ -463,7 +497,6 @@ const App: React.FC = () => {
         </button>
       </nav>
 
-      {/* SYSTEM ALERT MODAL */}
       {error && (
         <div className="fixed inset-0 z-[1000] flex items-center justify-center p-6 bg-black/40 backdrop-blur-md">
           <div className="w-full max-w-sm glass-card rounded-[32px] p-10 text-center animate-pro-reveal border border-white/20 shadow-2xl">
@@ -475,7 +508,6 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {/* ARCHIVES / HISTORY MODAL */}
       {showHistory && (
         <div className="fixed inset-0 z-[500] flex">
           <div className="absolute inset-0 bg-black/30 backdrop-blur-lg transition-all" onClick={() => setShowHistory(false)} />
