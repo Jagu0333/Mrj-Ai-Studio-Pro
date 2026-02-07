@@ -24,7 +24,8 @@ import {
   PenTool,
   Clock,
   Menu,
-  MonitorCheck
+  MonitorCheck,
+  Loader2
 } from 'lucide-react';
 import { 
   Asset, 
@@ -81,9 +82,9 @@ const App: React.FC = () => {
   
   const desiredFullscreenRef = useRef(false);
 
-  // Consolidated assets for API calls
+  // Decoupled processing states: block only core creative generation, not uploads
   const allAssets = [subjectAsset, contextAsset].filter(Boolean) as Asset[];
-  const isAnyProcessing = isProcessingCreative || isRefining || isGeneratingPoster || allAssets.some(a => a.status === 'processing');
+  const isGenerating = isProcessingCreative || isRefining || isGeneratingPoster;
 
   useEffect(() => {
     loadHistory();
@@ -134,8 +135,7 @@ const App: React.FC = () => {
   }, []);
 
   const handleIsolateSubject = async (asset: Asset, isSubject: boolean) => {
-    if (isAnyProcessing) return;
-    console.log(`[Action] Triggering Background Removal for asset ${asset.id}`);
+    console.log(`[Action] Triggering Background Removal for ${isSubject ? 'Subject' : 'Context'}`);
     
     const updateAsset = (status: any, extra = {}) => {
       if (isSubject) setSubjectAsset(prev => prev ? { ...prev, status, ...extra } : null);
@@ -153,7 +153,7 @@ const App: React.FC = () => {
   };
 
   const processFile = async (file: File, type: AssetType) => {
-    if (isAnyProcessing) return;
+    if (isGenerating) return; // Only block if we are in final generation phases
     setError(null);
     try {
       const reader = new FileReader();
@@ -177,8 +177,13 @@ const App: React.FC = () => {
       });
       
       const newAsset = await assetPromise;
-      if (type === AssetType.PRODUCT) setSubjectAsset(newAsset);
-      else setContextAsset(newAsset);
+      if (type === AssetType.PRODUCT) {
+        setSubjectAsset(newAsset);
+        if (bgRemovalEnabled) handleIsolateSubject(newAsset, true);
+      } else {
+        setContextAsset(newAsset);
+        if (bgRemovalEnabled) handleIsolateSubject(newAsset, false);
+      }
 
     } catch (e) { setError("Error reading file."); }
   };
@@ -186,8 +191,7 @@ const App: React.FC = () => {
   const loadHistory = async () => { setHistory(await db.getHistory()); };
   
   const handleCreativeIntelligence = async () => {
-    if (isAnyProcessing || allAssets.length === 0) return;
-    console.log("[Action] Consolidating Creative Analysis and Marketing Copy Generation into one API call.");
+    if (isGenerating || allAssets.length === 0) return;
     setIsProcessingCreative(true);
     try {
       const { analysis, copy } = await gemini.getCreativeIntelligence(allAssets);
@@ -198,8 +202,7 @@ const App: React.FC = () => {
   };
 
   const handleRefinePrompt = async () => {
-    if (isAnyProcessing || !selectedPrompt) return;
-    console.log("[Action] Refining Creative Directive.");
+    if (isGenerating || !selectedPrompt) return;
     setIsRefining(true);
     try {
       setSelectedPrompt(await gemini.refinePrompt(selectedPrompt, allAssets));
@@ -208,8 +211,15 @@ const App: React.FC = () => {
   };
 
   const handleGeneratePoster = async () => {
-    if (isAnyProcessing || allAssets.length === 0 || !selectedPrompt) return;
-    console.log("[Action] Initiating Master Poster Generation (Final Composition).");
+    if (isGenerating || allAssets.length === 0 || !selectedPrompt) return;
+    
+    // Safety: ensure all assets that ARE processing finish first, or just use the current state
+    const isStillIsolating = allAssets.some(a => a.status === 'processing');
+    if (isStillIsolating) {
+        setError("Please wait for background removal to complete before generating.");
+        return;
+    }
+
     setIsGeneratingPoster(true);
     setActiveTab('preview');
     try {
@@ -248,7 +258,7 @@ const App: React.FC = () => {
 
   return (
     <div className="fixed inset-0 flex flex-col overflow-hidden text-[#1d1d1f] dark:text-[#f5f5f7] bg-[#f5f5f7] dark:bg-[#000000] selection:bg-ios-blue selection:text-white">
-      {/* HEADER: Exactly matching Screenshot 1 */}
+      {/* HEADER */}
       <header className="h-16 glass-nav px-6 lg:px-12 flex items-center justify-between z-[200]">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 bg-ios-blue rounded-ios flex items-center justify-center shadow-lg transition-transform hover:scale-105">
@@ -273,7 +283,7 @@ const App: React.FC = () => {
       </header>
 
       <div className="flex-1 flex flex-col lg:flex-row relative overflow-hidden">
-        {/* SIDEBAR: Controls - Exactly matching Screenshots 1, 2, 4 */}
+        {/* SIDEBAR */}
         <aside className={`${activeTab === 'studio' ? 'flex' : 'hidden'} lg:flex w-full lg:w-[420px] h-full flex-col p-6 lg:p-8 gap-8 overflow-y-auto ios-scrollbar pb-48 border-r border-black/[0.05] dark:border-white/[0.05]`}>
           
           {/* 01 STUDIO ASSETS */}
@@ -282,24 +292,60 @@ const App: React.FC = () => {
               <h2 className="sidebar-section-title !mb-0">01 STUDIO ASSETS</h2>
               <button 
                 onClick={() => setBgRemovalEnabled(!bgRemovalEnabled)} 
-                disabled={isAnyProcessing}
+                disabled={isGenerating}
                 className={`px-4 py-1.5 rounded-full text-[10px] font-black flex items-center gap-1.5 transition-all ${bgRemovalEnabled ? 'bg-[#34C759] text-white shadow-md' : 'bg-transparent border border-gray-400 text-gray-500'}`}
               >
                 <CheckCircle2 className={`w-3.5 h-3.5 ${bgRemovalEnabled ? 'opacity-100' : 'opacity-30'}`} />
                 BG Remove
               </button>
             </div>
+            
             <div className="grid grid-cols-2 gap-4">
-              <label className={`h-32 rounded-ios glass-card flex flex-col items-center justify-center gap-2 cursor-pointer hover:bg-white/90 dark:hover:bg-white/10 transition-all active:scale-95 group ${isAnyProcessing ? 'opacity-30' : ''}`}>
-                <input type="file" disabled={isAnyProcessing} onChange={(e) => e.target.files?.[0] && processFile(e.target.files[0], AssetType.PRODUCT)} className="hidden" />
-                <PlusCircle className="w-7 h-7 text-ios-blue" />
-                <span className="text-[10px] font-black uppercase tracking-widest opacity-60">MAIN SUBJECT</span>
-              </label>
-              <label className={`h-32 rounded-ios glass-card flex flex-col items-center justify-center gap-2 cursor-pointer hover:bg-white/90 dark:hover:bg-white/10 transition-all active:scale-95 group ${isAnyProcessing ? 'opacity-30' : ''}`}>
-                <input type="file" disabled={isAnyProcessing} onChange={(e) => e.target.files?.[0] && processFile(e.target.files[0], AssetType.MODEL)} className="hidden" />
-                <ImageIcon className="w-7 h-7 text-purple-500" />
-                <span className="text-[10px] font-black uppercase tracking-widest opacity-60">CONTEXT/ENV</span>
-              </label>
+              {/* Main Subject Slot */}
+              <div className="relative group">
+                <label className={`h-32 rounded-ios glass-card flex flex-col items-center justify-center gap-2 cursor-pointer hover:bg-white/90 dark:hover:bg-white/10 transition-all active:scale-95 overflow-hidden ${isGenerating ? 'opacity-30 pointer-events-none' : ''}`}>
+                  <input type="file" onChange={(e) => e.target.files?.[0] && processFile(e.target.files[0], AssetType.PRODUCT)} className="hidden" />
+                  {subjectAsset ? (
+                    <div className="absolute inset-0 w-full h-full">
+                        <img src={(bgRemovalEnabled && subjectAsset.isolatedUrl) ? subjectAsset.isolatedUrl : subjectAsset.url} className={`w-full h-full object-contain transition-all duration-500 ${subjectAsset.status === 'processing' ? 'blur-md grayscale' : ''}`} />
+                        {subjectAsset.status === 'processing' && (
+                            <div className="absolute inset-0 flex items-center justify-center bg-black/20">
+                                <Loader2 className="w-8 h-8 text-white animate-spin" />
+                            </div>
+                        )}
+                        <button onClick={(e) => { e.preventDefault(); setSubjectAsset(null); }} className="absolute top-2 right-2 w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all"><X className="w-4 h-4" /></button>
+                    </div>
+                  ) : (
+                    <>
+                        <PlusCircle className="w-7 h-7 text-ios-blue" />
+                        <span className="text-[10px] font-black uppercase tracking-widest opacity-60">MAIN SUBJECT</span>
+                    </>
+                  )}
+                </label>
+              </div>
+
+              {/* Context Slot */}
+              <div className="relative group">
+                <label className={`h-32 rounded-ios glass-card flex flex-col items-center justify-center gap-2 cursor-pointer hover:bg-white/90 dark:hover:bg-white/10 transition-all active:scale-95 overflow-hidden ${isGenerating ? 'opacity-30 pointer-events-none' : ''}`}>
+                  <input type="file" onChange={(e) => e.target.files?.[0] && processFile(e.target.files[0], AssetType.MODEL)} className="hidden" />
+                  {contextAsset ? (
+                    <div className="absolute inset-0 w-full h-full">
+                        <img src={(bgRemovalEnabled && contextAsset.isolatedUrl) ? contextAsset.isolatedUrl : contextAsset.url} className={`w-full h-full object-contain transition-all duration-500 ${contextAsset.status === 'processing' ? 'blur-md grayscale' : ''}`} />
+                        {contextAsset.status === 'processing' && (
+                            <div className="absolute inset-0 flex items-center justify-center bg-black/20">
+                                <Loader2 className="w-8 h-8 text-white animate-spin" />
+                            </div>
+                        )}
+                        <button onClick={(e) => { e.preventDefault(); setContextAsset(null); }} className="absolute top-2 right-2 w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all"><X className="w-4 h-4" /></button>
+                    </div>
+                  ) : (
+                    <>
+                        <ImageIcon className="w-7 h-7 text-purple-500" />
+                        <span className="text-[10px] font-black uppercase tracking-widest opacity-60">CONTEXT/ENV</span>
+                    </>
+                  )}
+                </label>
+              </div>
             </div>
           </section>
 
@@ -307,7 +353,7 @@ const App: React.FC = () => {
           <section className="animate-pro-reveal" style={{ animationDelay: '0.1s' }}>
             <div className="flex items-center justify-between mb-4">
               <h2 className="sidebar-section-title !mb-0">02 VISION ENGINE</h2>
-              <button onClick={handleCreativeIntelligence} disabled={allAssets.length === 0 || isAnyProcessing} className="text-[10px] font-black text-ios-blue uppercase disabled:opacity-30 flex items-center gap-1.5 hover:brightness-110">
+              <button onClick={handleCreativeIntelligence} disabled={allAssets.length === 0 || isGenerating} className="text-[10px] font-black text-ios-blue uppercase disabled:opacity-30 flex items-center gap-1.5 hover:brightness-110">
                 <BrainCircuit className="w-4 h-4" />
                 SMART SCAN
               </button>
@@ -316,13 +362,13 @@ const App: React.FC = () => {
               <textarea 
                 value={selectedPrompt} 
                 onChange={(e) => setSelectedPrompt(e.target.value)} 
-                disabled={isAnyProcessing}
+                disabled={isGenerating}
                 placeholder="Synthesize your visual directive..." 
                 className="w-full glass-card rounded-ios p-6 text-[14px] min-h-[140px] focus:outline-none focus:ring-1 focus:ring-ios-blue/30 ios-scrollbar disabled:opacity-50" 
               />
               <button 
                 onClick={handleRefinePrompt} 
-                disabled={!selectedPrompt || isAnyProcessing} 
+                disabled={!selectedPrompt || isGenerating} 
                 className="absolute bottom-5 right-5 w-10 h-10 bg-black/5 dark:bg-white/10 rounded-full text-ios-blue flex items-center justify-center hover:bg-ios-blue hover:text-white transition-all active:scale-90" 
               >
                 {isRefining ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Zap className="w-5 h-5 fill-current" />}
@@ -335,10 +381,10 @@ const App: React.FC = () => {
             <div className="flex items-center justify-between mb-4">
               <h2 className="sidebar-section-title !mb-0">03 BRAND VOICE</h2>
               <div className="flex items-center gap-4">
-                <button onClick={() => setMarketingCopy({ headline: '', bodyCopy: '', cta: '' })} disabled={isAnyProcessing} className="text-[10px] font-black text-red-500 uppercase flex items-center gap-1.5 hover:brightness-125 disabled:opacity-30">
+                <button onClick={() => setMarketingCopy({ headline: '', bodyCopy: '', cta: '' })} disabled={isGenerating} className="text-[10px] font-black text-red-500 uppercase flex items-center gap-1.5 hover:brightness-125 disabled:opacity-30">
                   <Trash2 className="w-3.5 h-3.5" /> CLEAR
                 </button>
-                <button onClick={handleCreativeIntelligence} disabled={allAssets.length === 0 || isAnyProcessing} className="text-[10px] font-black text-ios-blue uppercase flex items-center gap-1.5 hover:brightness-110 disabled:opacity-30">
+                <button onClick={handleCreativeIntelligence} disabled={allAssets.length === 0 || isGenerating} className="text-[10px] font-black text-ios-blue uppercase flex items-center gap-1.5 hover:brightness-110 disabled:opacity-30">
                   <PenTool className="w-3.5 h-3.5" /> SMART COPY
                 </button>
               </div>
@@ -346,15 +392,15 @@ const App: React.FC = () => {
             <div className="space-y-4">
               <div className="glass-card rounded-ios p-4">
                 <span className="text-[9px] font-black text-ios-secondaryLabel uppercase block tracking-widest mb-1.5 flex items-center gap-1.5"><Zap className="w-3 h-3 text-ios-blue" /> VIRAL HEADLINE HOOK (ON POSTER)</span>
-                <input value={marketingCopy.headline} disabled={isAnyProcessing} onChange={(e) => setMarketingCopy({...marketingCopy, headline: e.target.value})} placeholder="The Elite Hook..." className="w-full bg-transparent text-[14px] font-bold focus:outline-none disabled:opacity-50" />
+                <input value={marketingCopy.headline} disabled={isGenerating} onChange={(e) => setMarketingCopy({...marketingCopy, headline: e.target.value})} placeholder="The Elite Hook..." className="w-full bg-transparent text-[14px] font-bold focus:outline-none disabled:opacity-50" />
               </div>
               <div className="glass-card rounded-ios p-4">
                 <span className="text-[9px] font-black text-ios-secondaryLabel uppercase block tracking-widest mb-1.5 flex items-center gap-1.5"><Megaphone className="w-3 h-3 text-purple-500" /> SOCIAL BODY COPY (NOT IN POSTER)</span>
-                <textarea value={marketingCopy.bodyCopy} disabled={isAnyProcessing} onChange={(e) => setMarketingCopy({...marketingCopy, bodyCopy: e.target.value})} placeholder="Elite social media caption..." className="w-full bg-transparent text-[13px] min-h-[80px] focus:outline-none resize-none ios-scrollbar disabled:opacity-50" />
+                <textarea value={marketingCopy.bodyCopy} disabled={isGenerating} onChange={(e) => setMarketingCopy({...marketingCopy, bodyCopy: e.target.value})} placeholder="Elite social media caption..." className="w-full bg-transparent text-[13px] min-h-[80px] focus:outline-none resize-none ios-scrollbar disabled:opacity-50" />
               </div>
               <div className="glass-card rounded-ios p-4">
                 <span className="text-[9px] font-black text-ios-secondaryLabel uppercase block tracking-widest mb-1.5 flex items-center gap-1.5"><RefreshCw className="w-3 h-3 text-ios-blue" /> CALL TO ACTION (ON POSTER)</span>
-                <input value={marketingCopy.cta} disabled={isAnyProcessing} onChange={(e) => setMarketingCopy({...marketingCopy, cta: e.target.value})} placeholder="e.g., Secure Yours Now..." className="w-full bg-transparent text-[14px] font-bold text-ios-blue focus:outline-none disabled:opacity-50" />
+                <input value={marketingCopy.cta} disabled={isGenerating} onChange={(e) => setMarketingCopy({...marketingCopy, cta: e.target.value})} placeholder="e.g., Secure Yours Now..." className="w-full bg-transparent text-[14px] font-bold text-ios-blue focus:outline-none disabled:opacity-50" />
               </div>
             </div>
           </section>
@@ -370,7 +416,7 @@ const App: React.FC = () => {
                   <button 
                     key={opt.label} 
                     onClick={() => setAspectRatio(opt.label)}
-                    disabled={isAnyProcessing}
+                    disabled={isGenerating}
                     className={`h-24 glass-card rounded-ios flex flex-col items-center justify-center gap-2 transition-all active:scale-[0.98] ${isActive ? 'ring-2 ring-ios-blue bg-ios-blue/5 shadow-[inset_0_0_15px_rgba(0,122,255,0.05)]' : 'hover:bg-white/80 dark:hover:bg-white/10'}`}
                   >
                     <div className="flex items-center gap-2">
@@ -385,7 +431,6 @@ const App: React.FC = () => {
               })}
             </div>
 
-            {/* CUSTOM RESOLUTION INPUTS: Exactly matching the provided screenshot */}
             {aspectRatio === 'Custom' && (
               <div className="glass-card rounded-ios p-5 animate-pro-reveal space-y-4">
                 <div className="grid grid-cols-2 gap-6 items-end">
@@ -415,10 +460,9 @@ const App: React.FC = () => {
             )}
           </section>
 
-          {/* GENERATE MASTERPIECE BUTTON: Fixed in sidebar area */}
           <button 
             onClick={handleGeneratePoster} 
-            disabled={isAnyProcessing || allAssets.length === 0 || !selectedPrompt} 
+            disabled={isGenerating || allAssets.length === 0 || !selectedPrompt} 
             className="mt-4 h-14 ios-btn-primary rounded-full text-[15px] font-black flex items-center justify-center gap-3 active:scale-95 shadow-xl disabled:opacity-30"
           >
             {isGeneratingPoster ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Zap className="w-5 h-5 fill-white" />}
@@ -426,7 +470,7 @@ const App: React.FC = () => {
           </button>
         </aside>
 
-        {/* MAIN PREVIEW AREA: Exactly matching Screenshots */}
+        {/* MAIN PREVIEW AREA */}
         <main className="flex-1 h-full flex flex-col items-center justify-center p-8 lg:p-12 overflow-hidden relative bg-[#f2f2f7] dark:bg-[#1c1c1e]">
           <div className="absolute top-6 left-1/2 -translate-x-1/2 z-[300]">
             <button 

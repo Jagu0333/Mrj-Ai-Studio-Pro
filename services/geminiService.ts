@@ -54,14 +54,12 @@ const getAI = () => {
  * Returns immediate failure messages.
  */
 const sanitizeError = (err: any): string => {
-  // If it's our own rate limit error, preserve it
   if (err.message === "Please wait before generating again.") {
     return err.message;
   }
 
   const errorString = JSON.stringify(err).toLowerCase();
   
-  // Specific Quota Failure Message
   if (errorString.includes("429") || errorString.includes("quota") || errorString.includes("exhausted") || errorString.includes("limit")) {
     return "Quota or capacity reached. Please try later.";
   }
@@ -124,7 +122,7 @@ export const getCreativeIntelligence = async (assets: Asset[]): Promise<{ analys
         ]
       },
       config: {
-        systemInstruction: "You are the Executive Creative Director. Output Analysis and Marketing Copy as a single JSON object. Preserve 100% asset fidelity in prompts.",
+        systemInstruction: "You are the Executive Creative Director. Output Analysis and Marketing Copy as a single JSON object. Preserve 100% asset fidelity in prompts. These are the EXACT assets that must be used in the final composition.",
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
@@ -172,7 +170,7 @@ export const refinePrompt = async (prompt: string, assets: Asset[]): Promise<str
       contents: {
         parts: [
           ...assetParts,
-          { text: `HEAD OF DESIGN REFINEMENT: Enhance this vision: "${prompt}". Focus on cinematic material physics. ONLY output the refined prompt text.` }
+          { text: `HEAD OF DESIGN REFINEMENT: Enhance this vision: "${prompt}". Focus on cinematic material physics. ONLY output the refined prompt text. Ensure the original objects provided in the parts are the central focus.` }
         ]
       },
       config: { 
@@ -196,7 +194,7 @@ export const isolateSubject = async (asset: Asset): Promise<{ base64: string, ur
       contents: {
         parts: [
           { inlineData: { data: asset.base64, mimeType: asset.mimeType } },
-          { text: "PRECISION ISOLATION: Isolate subject, remove background. Transparent PNG." }
+          { text: "PRECISION ISOLATION: Remove the background perfectly. Output a transparent PNG of the main subject. Do not change the subject's appearance, only remove the surroundings." }
         ]
       },
       config: { safetySettings: SAFETY_SETTINGS }
@@ -228,8 +226,10 @@ export const generatePoster = async (
     logApiCall();
     const ai = getAI();
     const assetParts = assets.map((a) => {
-      const data = (bgRemoval && a.isolatedBase64) ? a.isolatedBase64 : a.base64;
-      return { inlineData: { data, mimeType: 'image/png' } };
+      const isUsingIsolated = bgRemoval && a.isolatedBase64;
+      const data = isUsingIsolated ? a.isolatedBase64 : a.base64;
+      const mimeType = isUsingIsolated ? 'image/png' : a.mimeType;
+      return { inlineData: { data, mimeType } };
     });
 
     const ratioMap: Record<string, string> = {
@@ -245,7 +245,6 @@ export const generatePoster = async (
     let targetRatio = '1:1';
     if (ratio === 'Custom' && customDims) {
       const val = customDims.width / customDims.height;
-      // Find closest supported ratio
       if (val >= 1.7) targetRatio = '16:9';
       else if (val >= 1.3) targetRatio = '4:3';
       else if (val >= 0.9) targetRatio = '1:1';
@@ -259,7 +258,12 @@ export const generatePoster = async (
       ? `STRICT BRANDING: Integrate Headline: "${marketingCopy?.headline || ''}" and CTA: "${marketingCopy?.cta || ''}" using premium ad typography.` 
       : `STRICT REQUIREMENT: NO TEXT. Composition only.`;
 
-    const finalPrompt = `VISION: ${prompt}. ${brandingText} STRICT FIDELITY: Use product images exactly. Composite with cinematic lighting. FORMAT: ${targetRatio}`;
+    // Stronger system directive for fidelity
+    const finalPrompt = `ASSET FIDELITY DIRECTIVE: You MUST use the visual features (textures, colors, shapes) of the provided image parts EXACTLY as they appear. 
+    SCENE: ${prompt}. 
+    ${brandingText} 
+    COMPOSITION: Professional advertising photography with cinematic lighting. Ensure the product and environment from the parts are merged seamlessly while maintaining their original identity. 
+    FORMAT: ${targetRatio}`;
 
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash-image',
