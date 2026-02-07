@@ -11,23 +11,20 @@ import {
   PlusCircle,
   BrainCircuit,
   AlertCircle,
-  RotateCcw,
   Moon,
   Sun,
-  Type as TypeIcon,
-  Megaphone,
-  Smartphone,
   Layers,
-  CheckCircle2,
   Maximize,
   Minimize,
   Trash2,
-  ChevronRight,
-  SendHorizontal,
   Edit3,
+  Megaphone,
+  Smartphone,
+  CheckCircle2,
   PenTool,
-  Copy,
-  Check
+  Clock,
+  Menu,
+  MonitorCheck
 } from 'lucide-react';
 import { 
   Asset, 
@@ -43,25 +40,33 @@ import * as db from './services/dbService';
 const LOADING_MESSAGES = [
   "Analyzing visual DNA...",
   "Applying Art Director's vision...",
-  "Synthesizing high-fidelity lighting...",
+  "Synthesizing material physics...",
   "Aligning brand typography...",
   "Color grading textures...",
   "Finalizing production asset...",
   "Polishing pixel-perfect details..."
 ];
 
+const RATIO_OPTIONS: { label: AspectRatio; icon: any; sub: string }[] = [
+  { label: 'Instagram Square (1:1)', icon: Layers, sub: '1:1' },
+  { label: 'Instagram Portrait (4:5)', icon: Smartphone, sub: '4:5' },
+  { label: 'Instagram Story (9:16)', icon: Smartphone, sub: '9:16' },
+  { label: 'Facebook Feed (16:9)', icon: Monitor, sub: '16:9' },
+  { label: 'Facebook Cover (16:9)', icon: Monitor, sub: '16:9' },
+  { label: 'YouTube Thumbnail (16:9)', icon: Monitor, sub: '16:9' },
+  { label: 'LinkedIn Feed (4:5)', icon: Layers, sub: '4:5' },
+  { label: 'Custom', icon: Edit3, sub: '1920X1080' },
+];
+
 const App: React.FC = () => {
-  const [assets, setAssets] = useState<Asset[]>([]);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
+  const [subjectAsset, setSubjectAsset] = useState<Asset | null>(null);
+  const [contextAsset, setContextAsset] = useState<Asset | null>(null);
+  const [isProcessingCreative, setIsProcessingCreative] = useState(false);
   const [selectedPrompt, setSelectedPrompt] = useState('');
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>('Instagram Square (1:1)');
-  const [customWidth, setCustomWidth] = useState(1920);
-  const [customHeight, setCustomHeight] = useState(1080);
   const [marketingCopy, setMarketingCopy] = useState<MarketingCopy>({ headline: '', bodyCopy: '', cta: '' });
   const [isGeneratingPoster, setIsGeneratingPoster] = useState(false);
   const [loadingStep, setLoadingStep] = useState(0);
-  const [isGeneratingCopy, setIsGeneratingCopy] = useState(false);
   const [finalImage, setFinalImage] = useState<string | null>(null);
   const [isRefining, setIsRefining] = useState(false);
   const [bgRemovalEnabled, setBgRemovalEnabled] = useState(true);
@@ -69,18 +74,26 @@ const App: React.FC = () => {
   const [showHistory, setShowHistory] = useState(false);
   const [activeTab, setActiveTab] = useState<'studio' | 'preview'>('studio');
   const [error, setError] = useState<string | null>(null);
-  const [isCoolingDown, setIsCoolingDown] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(() => localStorage.getItem('studio-theme') === 'dark');
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [copiedBody, setCopiedBody] = useState(false);
+  
+  const desiredFullscreenRef = useRef(false);
+
+  // Consolidated assets for API calls
+  const allAssets = [subjectAsset, contextAsset].filter(Boolean) as Asset[];
+  const isAnyProcessing = isProcessingCreative || isRefining || isGeneratingPoster || allAssets.some(a => a.status === 'processing');
 
   useEffect(() => {
     loadHistory();
     const handleFullscreenChange = () => {
-      setIsFullscreen(!!document.fullscreenElement);
+      setIsFullscreen(!!(document.fullscreenElement || (document as any).webkitFullscreenElement));
     };
     document.addEventListener('fullscreenchange', handleFullscreenChange);
-    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
+    };
   }, []);
 
   useEffect(() => {
@@ -99,82 +112,50 @@ const App: React.FC = () => {
       interval = setInterval(() => {
         setLoadingStep(prev => (prev + 1) % LOADING_MESSAGES.length);
       }, 2500);
-    } else {
-      setLoadingStep(0);
     }
     return () => clearInterval(interval);
   }, [isGeneratingPoster]);
 
-  const toggleFullscreen = () => {
+  const toggleFullscreen = useCallback(async () => {
     try {
-      if (!document.fullscreenElement) {
-        document.documentElement.requestFullscreen().catch(() => {
-          setError("Fullscreen request failed. System dialogs like file pickers often interrupt Fullscreen mode for security.");
-        });
+      const elem = document.documentElement;
+      if (!document.fullscreenElement && !(document as any).webkitFullscreenElement) {
+        desiredFullscreenRef.current = true;
+        if (elem.requestFullscreen) await elem.requestFullscreen();
+        else if ((elem as any).webkitRequestFullscreen) await (elem as any).webkitRequestFullscreen();
       } else {
-        document.exitFullscreen();
+        desiredFullscreenRef.current = false;
+        if (document.exitFullscreen) await document.exitFullscreen();
+        else if ((document as any).webkitExitFullscreen) await (document as any).webkitExitFullscreen();
       }
-    } catch (e) { console.error(e); }
-  };
+    } catch (e) { console.warn("FS_ERR", e); }
+  }, []);
 
-  const loadHistory = async () => {
+  const handleIsolateSubject = async (asset: Asset, isSubject: boolean) => {
+    if (isAnyProcessing) return;
+    console.log(`[Action] Triggering Background Removal for asset ${asset.id}`);
+    
+    const updateAsset = (status: any, extra = {}) => {
+      if (isSubject) setSubjectAsset(prev => prev ? { ...prev, status, ...extra } : null);
+      else setContextAsset(prev => prev ? { ...prev, status, ...extra } : null);
+    };
+
+    updateAsset('processing');
     try {
-      const items = await db.getHistory();
-      setHistory(items);
-    } catch (err) { console.error("History error", err); }
-  };
-
-  const editHistoryItem = (item: HistoryItem) => {
-    setSelectedPrompt(item.prompt);
-    if (item.copy) {
-      setMarketingCopy(item.copy);
-    } else {
-      setMarketingCopy({ headline: '', bodyCopy: '', cta: '' });
-    }
-    setAspectRatio(item.ratio);
-    if (item.customWidth) setCustomWidth(item.customWidth);
-    if (item.customHeight) setCustomHeight(item.customHeight);
-    setShowHistory(false);
-    setActiveTab('studio');
-    setFinalImage(item.imageUrl);
-  };
-
-  const triggerIsolation = useCallback(async (assetId: string) => {
-    setAssets(prev => prev.map(a => a.id === assetId ? { ...a, status: 'processing' } : a));
-    try {
-      const target = assets.find(a => a.id === assetId);
-      if (!target) return;
-      const res = await gemini.isolateSubject(target);
-      setAssets(prev => prev.map(a => 
-        a.id === assetId ? { ...a, isolatedBase64: res.base64, isolatedUrl: res.url, status: 'completed' } : a
-      ));
+      const res = await gemini.isolateSubject(asset);
+      updateAsset('completed', { isolatedBase64: res.base64, isolatedUrl: res.url });
     } catch (err: any) {
-      setAssets(prev => prev.map(a => a.id === assetId ? { ...a, status: 'failed', error: err.message } : a));
+      updateAsset('failed', { error: err.message });
       setError(err.message);
-    } finally {
-      setIsCoolingDown(true);
-      setTimeout(() => setIsCoolingDown(false), 2000); 
     }
-  }, [assets]);
-
-  useEffect(() => {
-    if (!bgRemovalEnabled || isCoolingDown) return;
-    if (assets.some(a => a.status === 'processing')) return;
-    const nextPending = assets.find(a => (!a.status || a.status === 'pending') && !a.isolatedBase64);
-    if (nextPending) triggerIsolation(nextPending.id);
-  }, [assets, bgRemovalEnabled, isCoolingDown, triggerIsolation]);
-
-  const removeAsset = (id: string) => {
-    setAssets(prev => prev.filter(a => a.id !== id));
   };
 
-  const processFiles = async (files: FileList | File[], type: AssetType) => {
+  const processFile = async (file: File, type: AssetType) => {
+    if (isAnyProcessing) return;
     setError(null);
-    const newAssets: Asset[] = [];
-    for (const file of Array.from(files)) {
-      if (!file.type.startsWith('image/')) continue;
+    try {
       const reader = new FileReader();
-      const promise = new Promise<Asset>((resolve, reject) => {
+      const assetPromise = new Promise<Asset>((resolve, reject) => {
         reader.onload = async () => {
           try {
             const rawBase64 = (reader.result as string).split(',')[1];
@@ -190,527 +171,334 @@ const App: React.FC = () => {
             });
           } catch (e) { reject(e); }
         };
-        reader.onerror = () => reject("File read error");
+        reader.readAsDataURL(file);
       });
-      reader.readAsDataURL(file);
-      try { newAssets.push(await promise); } catch (e) { setError("Error processing file."); }
-    }
-    setAssets(prev => [...prev, ...newAssets]);
+      
+      const newAsset = await assetPromise;
+      if (type === AssetType.PRODUCT) setSubjectAsset(newAsset);
+      else setContextAsset(newAsset);
+
+    } catch (e) { setError("Error reading file."); }
   };
 
-  const handleAnalyzeAssets = async () => {
-    if (assets.length === 0) return;
-    setIsAnalyzing(true);
+  const loadHistory = async () => { setHistory(await db.getHistory()); };
+  
+  const handleCreativeIntelligence = async () => {
+    if (isAnyProcessing || allAssets.length === 0) return;
+    console.log("[Action] Consolidating Creative Analysis and Marketing Copy Generation into one API call.");
+    setIsProcessingCreative(true);
     try {
-      const res = await gemini.analyzeAssets(assets);
-      setAnalysis(res);
-      setSelectedPrompt(res.suggestedPrompt);
+      const { analysis, copy } = await gemini.getCreativeIntelligence(allAssets);
+      setSelectedPrompt(analysis.suggestedPrompt);
+      setMarketingCopy(copy);
     } catch (err: any) { setError(err.message); }
-    finally { setIsAnalyzing(false); }
+    finally { setIsProcessingCreative(false); }
   };
 
   const handleRefinePrompt = async () => {
-    if (!selectedPrompt) return;
+    if (isAnyProcessing || !selectedPrompt) return;
+    console.log("[Action] Refining Creative Directive.");
     setIsRefining(true);
     try {
-      const refined = await gemini.refinePrompt(selectedPrompt);
-      setSelectedPrompt(refined);
+      setSelectedPrompt(await gemini.refinePrompt(selectedPrompt, allAssets));
     } catch (err: any) { setError(err.message); }
     finally { setIsRefining(false); }
   };
 
-  const handleGenerateCopy = async () => {
-    if (!selectedPrompt) return setError("Provide creative vision first.");
-    setIsGeneratingCopy(true);
-    try {
-      const copy = await gemini.generateMarketingCopy(selectedPrompt);
-      setMarketingCopy(copy);
-    } catch (err: any) { setError(err.message); }
-    finally { setIsGeneratingCopy(false); }
-  };
-
-  const handleClearCopy = () => {
-    setMarketingCopy({ headline: '', bodyCopy: '', cta: '' });
-  };
-
   const handleGeneratePoster = async () => {
-    if (assets.length === 0 || !selectedPrompt) return setError("Missing assets or creative vision.");
+    if (isAnyProcessing || allAssets.length === 0 || !selectedPrompt) return;
+    console.log("[Action] Initiating Master Poster Generation (Final Composition).");
     setIsGeneratingPoster(true);
     setActiveTab('preview');
     try {
-      const copyForPoster = (marketingCopy.headline?.trim() || marketingCopy.cta?.trim()) ? marketingCopy : null;
-      const img = await gemini.generatePoster(
-          assets, 
-          selectedPrompt, 
-          aspectRatio, 
-          bgRemovalEnabled, 
-          copyForPoster,
-          aspectRatio === 'Custom' ? customWidth : undefined,
-          aspectRatio === 'Custom' ? customHeight : undefined
-      );
+      const img = await gemini.generatePoster(allAssets, selectedPrompt, aspectRatio, bgRemovalEnabled, marketingCopy);
       setFinalImage(img);
-      const item: HistoryItem = { 
-          id: Math.random().toString(36).substr(2, 9), 
-          imageUrl: img, 
-          prompt: selectedPrompt, 
-          copy: marketingCopy.headline?.trim() || marketingCopy.bodyCopy?.trim() || marketingCopy.cta?.trim() ? marketingCopy : null, 
-          ratio: aspectRatio, 
-          customWidth: aspectRatio === 'Custom' ? customWidth : undefined,
-          customHeight: aspectRatio === 'Custom' ? customHeight : undefined,
-          timestamp: Date.now() 
-      };
-      await db.saveHistoryItem(item);
+      await db.saveHistoryItem({ 
+          id: Math.random().toString(36).substr(2, 9), imageUrl: img, prompt: selectedPrompt, copy: marketingCopy, ratio: aspectRatio, timestamp: Date.now() 
+      });
       loadHistory();
-    } catch (err: any) { 
-        setError(err.message); 
-        setActiveTab('studio'); 
-    } finally { 
-        setIsGeneratingPoster(false); 
-    }
+    } catch (err: any) { setError(err.message); setActiveTab('studio'); }
+    finally { setIsGeneratingPoster(false); }
   };
 
-  const handleDownload = (imageUrl: string, prefix: string = 'Design') => {
-    if (!imageUrl) return;
+  const handleDownloadImage = (url: string, prefix: string = 'Master') => {
     const link = document.createElement('a');
-    link.href = imageUrl;
-    const uniqueId = Date.now();
-    link.download = `MrJ_Studio_${prefix}_${uniqueId}.png`;
+    link.href = url;
+    link.download = `MrJ_Studio_${prefix}_${Date.now()}.png`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
   };
 
-  const copyBodyToClipboard = () => {
-    if (!marketingCopy.bodyCopy) return;
-    navigator.clipboard.writeText(marketingCopy.bodyCopy);
-    setCopiedBody(true);
-    setTimeout(() => setCopiedBody(false), 2000);
-  };
-
-  const ratioOptions: { label: AspectRatio; icon: React.ReactNode; pixels: string }[] = [
-    { label: 'Instagram Square (1:1)', icon: <Layers className="w-5 h-5" />, pixels: '1080x1080' },
-    { label: 'Instagram Portrait (4:5)', icon: <Smartphone className="w-5 h-5" />, pixels: '1080x1350' },
-    { label: 'Instagram Story (9:16)', icon: <Smartphone className="w-5 h-5" />, pixels: '1080x1920' },
-    { label: 'Facebook Feed (16:9)', icon: <Monitor className="w-5 h-5" />, pixels: '1200x630' },
-    { label: 'Facebook Cover (16:9)', icon: <Monitor className="w-5 h-5" />, pixels: '820x312' },
-    { label: 'YouTube Thumbnail (16:9)', icon: <Monitor className="w-5 h-5" />, pixels: '1280x720' },
-    { label: 'LinkedIn Feed (4:5)', icon: <Layers className="w-5 h-5" />, pixels: '1080x1350' },
-    { label: 'Custom', icon: <Edit3 className="w-5 h-5" />, pixels: 'Pro Choice' }
-  ];
-
   return (
     <div className="fixed inset-0 flex flex-col overflow-hidden text-[#1d1d1f] dark:text-[#f5f5f7] bg-[#f5f5f7] dark:bg-[#000000] selection:bg-ios-blue selection:text-white">
-      
-      {/* Header */}
+      {/* HEADER: Exactly matching Screenshot 1 */}
       <header className="h-16 glass-nav px-6 lg:px-12 flex items-center justify-between z-[200]">
-        <div className="flex items-center gap-3 lg:gap-4">
-          <div className="w-9 h-9 lg:w-10 lg:h-10 bg-ios-blue rounded-ios flex items-center justify-center shadow-lg shadow-blue-500/10">
-            <Sparkles className="w-5 h-5 lg:w-6 lg:h-6 text-white" />
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 bg-ios-blue rounded-ios flex items-center justify-center shadow-lg transition-transform hover:scale-105">
+            <Sparkles className="w-6 h-6 text-white" />
           </div>
-          <div className="flex flex-col">
-            <h1 className="text-[16px] lg:text-[17px] font-extrabold tracking-tight leading-none titanium-text">MrJ Studio <span className="text-ios-blue font-black">Pro</span></h1>
-            <p className="text-[9px] uppercase tracking-[0.2em] font-black text-[#8e8e93] mt-1 opacity-60">Elite Ad Synthesis</p>
+          <div>
+            <h1 className="text-[17px] font-extrabold tracking-tight titanium-text">MrJ Studio Pro</h1>
+            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-ios-secondaryLabel opacity-60">ELITE AD SYNTHESIS</p>
           </div>
         </div>
-        
-        <div className="flex items-center gap-1 p-1 bg-black/[0.04] dark:bg-white/[0.05] rounded-full">
-          <button onClick={toggleFullscreen} className="w-8 h-8 lg:w-9 lg:h-9 flex items-center justify-center hover:bg-white dark:hover:bg-white/10 rounded-full text-ios-blue active:scale-90 transition-all" title="Full Screen">
-            {isFullscreen ? <Minimize className="w-4.5 h-4.5 lg:w-5 lg:h-5" /> : <Maximize className="w-4.5 h-4.5 lg:w-5 lg:h-5" />}
+        <div className="flex items-center gap-1 p-1 bg-black/5 dark:bg-white/5 rounded-ios-sm">
+          <button onClick={toggleFullscreen} className="w-9 h-9 flex items-center justify-center hover:bg-white dark:hover:bg-white/10 rounded-ios-sm text-ios-blue transition-all active:scale-90">
+            {isFullscreen ? <Minimize className="w-5 h-5" /> : <Maximize className="w-5 h-5" />}
           </button>
-          <button onClick={() => setIsDarkMode(!isDarkMode)} className="w-8 h-8 lg:w-9 lg:h-9 flex items-center justify-center hover:bg-white dark:hover:bg-white/10 rounded-full text-ios-blue active:scale-90 transition-all" title="Appearance">
-            {isDarkMode ? <Sun className="w-4.5 h-4.5 lg:w-5 lg:h-5" /> : <Moon className="w-4.5 h-4.5 lg:w-5 lg:h-5" />}
+          <button onClick={() => setIsDarkMode(!isDarkMode)} className="w-9 h-9 flex items-center justify-center hover:bg-white dark:hover:bg-white/10 rounded-ios-sm text-ios-blue transition-all active:scale-90">
+            {isDarkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
           </button>
-          <button onClick={() => setShowHistory(true)} className="w-8 h-8 lg:w-9 lg:h-9 flex items-center justify-center hover:bg-white dark:hover:bg-white/10 rounded-full text-ios-blue active:scale-90 transition-all" title="Archives">
-            <History className="w-4.5 h-4.5 lg:w-5 lg:h-5" />
+          <button onClick={() => setShowHistory(true)} className="w-9 h-9 flex items-center justify-center hover:bg-white dark:hover:bg-white/10 rounded-ios-sm text-ios-blue transition-all active:scale-90">
+            <History className="w-5 h-5" />
           </button>
         </div>
       </header>
 
       <div className="flex-1 flex flex-col lg:flex-row relative overflow-hidden">
-        
-        {/* Sidebar */}
-        <aside className={`${activeTab === 'studio' ? 'flex' : 'hidden'} lg:flex w-full lg:w-[420px] h-full flex-col p-6 lg:p-10 gap-8 overflow-y-auto ios-scrollbar pb-32`}>
+        {/* SIDEBAR: Controls - Exactly matching Screenshots 1, 2, 4 */}
+        <aside className={`${activeTab === 'studio' ? 'flex' : 'hidden'} lg:flex w-full lg:w-[420px] h-full flex-col p-6 lg:p-8 gap-8 overflow-y-auto ios-scrollbar pb-32 border-r border-black/[0.05] dark:border-white/[0.05]`}>
           
-          {/* Section 01: Assets */}
-          <section className="animate-pro-reveal" style={{ animationDelay: '0s' }}>
-            <div className="flex items-center justify-between px-1 mb-3">
-              <h2 className="sidebar-section-title !mb-0">01 Studio Assets</h2>
+          {/* 01 STUDIO ASSETS */}
+          <section className="animate-pro-reveal">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="sidebar-section-title !mb-0">01 STUDIO ASSETS</h2>
               <button 
-                onClick={() => setBgRemovalEnabled(!bgRemovalEnabled)}
-                className={`flex items-center gap-2 text-[10px] font-extrabold px-3 py-1.5 rounded-full transition-all ${bgRemovalEnabled ? 'bg-[#34c759] text-white shadow-lg' : 'bg-transparent border border-[#8e8e93]/30 text-[#8e8e93]'}`}
+                onClick={() => setBgRemovalEnabled(!bgRemovalEnabled)} 
+                disabled={isAnyProcessing}
+                className={`px-4 py-1.5 rounded-full text-[10px] font-black flex items-center gap-1.5 transition-all ${bgRemovalEnabled ? 'bg-[#34C759] text-white shadow-md' : 'bg-transparent border border-gray-400 text-gray-500'}`}
               >
-                {bgRemovalEnabled ? <CheckCircle2 className="w-3.5 h-3.5" /> : <Layers className="w-3.5 h-3.5" />}
+                <CheckCircle2 className={`w-3.5 h-3.5 ${bgRemovalEnabled ? 'opacity-100' : 'opacity-30'}`} />
                 BG Remove
               </button>
             </div>
-            
-            <div className="grid grid-cols-2 gap-3 lg:gap-4">
-              <label className="group h-24 rounded-ios glass-card flex flex-col items-center justify-center gap-2 cursor-pointer hover:bg-white/90 dark:hover:bg-white/10 active:scale-95">
-                <input type="file" multiple onChange={(e) => e.target.files && processFiles(e.target.files, AssetType.PRODUCT)} className="hidden" />
-                <div className="w-9 h-9 rounded-full bg-ios-blue/10 flex items-center justify-center text-ios-blue group-hover:bg-ios-blue group-hover:text-white transition-all">
-                  <PlusCircle className="w-5.5 h-5.5" />
-                </div>
-                <span className="text-[11px] font-bold opacity-60 uppercase tracking-tighter">Main Subject</span>
+            <div className="grid grid-cols-2 gap-4">
+              <label className={`h-32 rounded-ios glass-card flex flex-col items-center justify-center gap-2 cursor-pointer hover:bg-white/90 dark:hover:bg-white/10 transition-all active:scale-95 group ${isAnyProcessing ? 'opacity-30' : ''}`}>
+                <input type="file" disabled={isAnyProcessing} onChange={(e) => e.target.files?.[0] && processFile(e.target.files[0], AssetType.PRODUCT)} className="hidden" />
+                <PlusCircle className="w-7 h-7 text-ios-blue" />
+                <span className="text-[10px] font-black uppercase tracking-widest opacity-60">MAIN SUBJECT</span>
               </label>
-              <label className="group h-24 rounded-ios glass-card flex flex-col items-center justify-center gap-2 cursor-pointer hover:bg-white/90 dark:hover:bg-white/10 active:scale-95">
-                <input type="file" multiple onChange={(e) => e.target.files && processFiles(e.target.files, AssetType.MODEL)} className="hidden" />
-                <div className="w-9 h-9 rounded-full bg-purple-500/10 flex items-center justify-center text-purple-500 group-hover:bg-purple-500 group-hover:text-white transition-all">
-                  <ImageIcon className="w-5.5 h-5.5" />
-                </div>
-                <span className="text-[11px] font-bold opacity-60 uppercase tracking-tighter">Context/Env</span>
+              <label className={`h-32 rounded-ios glass-card flex flex-col items-center justify-center gap-2 cursor-pointer hover:bg-white/90 dark:hover:bg-white/10 transition-all active:scale-95 group ${isAnyProcessing ? 'opacity-30' : ''}`}>
+                <input type="file" disabled={isAnyProcessing} onChange={(e) => e.target.files?.[0] && processFile(e.target.files[0], AssetType.MODEL)} className="hidden" />
+                <ImageIcon className="w-7 h-7 text-purple-500" />
+                <span className="text-[10px] font-black uppercase tracking-widest opacity-60">CONTEXT/ENV</span>
               </label>
             </div>
-
-            {assets.length > 0 && (
-              <div className="flex gap-3 overflow-x-auto pb-2 px-1 no-scrollbar mt-4">
-                {assets.map(asset => (
-                  <div key={asset.id} className="relative shrink-0 w-16 h-16 rounded-ios-sm glass-card overflow-hidden group shadow-lg border border-white/20">
+            {allAssets.length > 0 && (
+              <div className="flex gap-2 overflow-x-auto pb-2 mt-4 no-scrollbar">
+                {allAssets.map(asset => (
+                  <div key={asset.id} className="relative shrink-0 w-20 h-20 rounded-ios-sm glass-card overflow-hidden group border border-white/20">
                     <img src={(bgRemovalEnabled && asset.isolatedUrl) ? asset.isolatedUrl : asset.url} className="w-full h-full object-cover" />
-                    {asset.status === 'processing' && (
-                      <div className="absolute inset-0 bg-white/60 flex items-center justify-center backdrop-blur-md">
-                        <RefreshCw className="w-5 h-5 animate-spin text-ios-blue" />
-                      </div>
-                    )}
-                    <button onClick={() => removeAsset(asset.id)} className="absolute top-0 right-0 p-1 bg-black/40 text-white rounded-bl-ios-sm hover:bg-red-500">
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                    {asset.status === 'completed' && asset.isolatedUrl && (
-                      <button 
-                        onClick={() => handleDownload(asset.isolatedUrl!, `Studio_Subject_${asset.name}`)}
-                        className="absolute bottom-0 right-0 p-1 bg-green-500/80 text-white rounded-tl-ios-sm hover:bg-green-600 transition-colors"
-                        title="Download Transparent Subject"
-                      >
-                        <Download className="w-3 h-3" />
-                      </button>
-                    )}
-                    {asset.status === 'failed' && (
-                      <div className="absolute inset-0 bg-red-500/20 flex items-center justify-center" title={asset.error}>
-                        <AlertCircle className="w-5 h-5 text-red-600" />
-                      </div>
-                    )}
+                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-all">
+                      <button onClick={() => asset.type === AssetType.PRODUCT ? setSubjectAsset(null) : setContextAsset(null)} className="p-1.5 bg-red-500 text-white rounded-full"><X className="w-4 h-4" /></button>
+                    </div>
                   </div>
                 ))}
               </div>
             )}
           </section>
 
-          {/* Section 02: Vision Engine */}
+          {/* 02 VISION ENGINE */}
           <section className="animate-pro-reveal" style={{ animationDelay: '0.1s' }}>
-            <div className="flex items-center justify-between px-1 mb-3">
-              <h2 className="sidebar-section-title !mb-0">02 Vision Engine</h2>
-              <button 
-                onClick={handleAnalyzeAssets} 
-                disabled={assets.length === 0 || isAnalyzing} 
-                className="text-[10px] font-black text-ios-blue uppercase tracking-widest disabled:opacity-30 flex items-center gap-1.5"
-              >
-                {isAnalyzing ? <RefreshCw className="w-3 h-3 animate-spin" /> : <BrainCircuit className="w-3.5 h-3.5" />}
-                Smart Scan
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="sidebar-section-title !mb-0">02 VISION ENGINE</h2>
+              <button onClick={handleCreativeIntelligence} disabled={allAssets.length === 0 || isAnyProcessing} className="text-[10px] font-black text-ios-blue uppercase disabled:opacity-30 flex items-center gap-1.5 hover:brightness-110">
+                <BrainCircuit className="w-4 h-4" />
+                SMART SCAN
               </button>
             </div>
-            <div className="relative group">
+            <div className="relative">
               <textarea 
                 value={selectedPrompt} 
                 onChange={(e) => setSelectedPrompt(e.target.value)} 
+                disabled={isAnyProcessing}
                 placeholder="Synthesize your visual directive..." 
-                className="w-full glass-card rounded-ios p-5 text-[14px] font-medium leading-relaxed min-h-[140px] resize-none hover:bg-white/90 dark:hover:bg-white/10 focus:outline-none" 
+                className="w-full glass-card rounded-ios p-6 text-[14px] min-h-[140px] focus:outline-none focus:ring-1 focus:ring-ios-blue/30 ios-scrollbar disabled:opacity-50" 
               />
               <button 
                 onClick={handleRefinePrompt} 
-                disabled={!selectedPrompt || isRefining} 
-                className="absolute bottom-5 right-5 w-10 h-10 bg-ios-blue/10 dark:bg-white/10 hover:bg-ios-blue hover:text-white flex items-center justify-center rounded-full transition-all active:scale-90 disabled:opacity-20 shadow-lg"
+                disabled={!selectedPrompt || isAnyProcessing} 
+                className="absolute bottom-5 right-5 w-10 h-10 bg-black/5 dark:bg-white/10 rounded-full text-ios-blue flex items-center justify-center hover:bg-ios-blue hover:text-white transition-all active:scale-90" 
               >
                 {isRefining ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Zap className="w-5 h-5 fill-current" />}
               </button>
             </div>
           </section>
 
-          {/* Section 03: Brand Voice */}
+          {/* 03 BRAND VOICE */}
           <section className="animate-pro-reveal" style={{ animationDelay: '0.2s' }}>
-             <div className="flex items-center justify-between px-1 mb-3">
-              <h2 className="sidebar-section-title !mb-0">03 Brand Voice</h2>
-              <div className="flex items-center gap-3">
-                <button 
-                  onClick={handleClearCopy} 
-                  className="text-[9px] font-black text-red-500 uppercase tracking-widest flex items-center gap-1 hover:brightness-125"
-                >
-                  <Trash2 className="w-3 h-3" />
-                  Clear
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="sidebar-section-title !mb-0">03 BRAND VOICE</h2>
+              <div className="flex items-center gap-4">
+                <button onClick={() => setMarketingCopy({ headline: '', bodyCopy: '', cta: '' })} disabled={isAnyProcessing} className="text-[10px] font-black text-red-500 uppercase flex items-center gap-1.5 hover:brightness-125 disabled:opacity-30">
+                  <Trash2 className="w-3.5 h-3.5" /> CLEAR
                 </button>
-                <button 
-                  onClick={handleGenerateCopy} 
-                  disabled={!selectedPrompt || isGeneratingCopy} 
-                  className="text-[10px] font-black text-ios-blue uppercase tracking-widest flex items-center gap-1.5 disabled:opacity-30"
-                >
-                  {isGeneratingCopy ? <RefreshCw className="w-3 h-3 animate-spin" /> : <PenTool className="w-3.5 h-3.5" />}
-                  Smart Copy
+                <button onClick={handleCreativeIntelligence} disabled={allAssets.length === 0 || isAnyProcessing} className="text-[10px] font-black text-ios-blue uppercase flex items-center gap-1.5 hover:brightness-110 disabled:opacity-30">
+                  <PenTool className="w-3.5 h-3.5" /> SMART COPY
                 </button>
               </div>
             </div>
-
             <div className="space-y-4">
-              <div className="glass-card rounded-ios p-4 lg:p-5 group">
-                <span className="text-[9px] font-black text-[#8e8e93] uppercase mb-1.5 block tracking-widest flex items-center gap-2">
-                  <Zap className="w-3 h-3 text-ios-blue" />
-                  Viral Headline Hook (On Poster)
-                </span>
-                <input 
-                  type="text"
-                  value={marketingCopy.headline}
-                  onChange={(e) => setMarketingCopy({...marketingCopy, headline: e.target.value})}
-                  placeholder="The Elite Hook..."
-                  className="w-full bg-transparent text-[14px] lg:text-[15px] font-extrabold focus:outline-none placeholder:opacity-30"
-                />
+              <div className="glass-card rounded-ios p-4">
+                <span className="text-[9px] font-black text-ios-secondaryLabel uppercase block tracking-widest mb-1.5 flex items-center gap-1.5"><Zap className="w-3 h-3 text-ios-blue" /> VIRAL HEADLINE HOOK (ON POSTER)</span>
+                <input value={marketingCopy.headline} disabled={isAnyProcessing} onChange={(e) => setMarketingCopy({...marketingCopy, headline: e.target.value})} placeholder="The Elite Hook..." className="w-full bg-transparent text-[14px] font-bold focus:outline-none disabled:opacity-50" />
               </div>
-
-              <div className="glass-card rounded-ios p-4 lg:p-5 relative group">
-                <span className="text-[9px] font-black text-[#8e8e93] uppercase mb-1.5 block tracking-widest flex items-center gap-2">
-                  <Megaphone className="w-3 h-3 text-purple-500" />
-                  Social Body Copy (Not in Poster)
-                </span>
-                <textarea 
-                  value={marketingCopy.bodyCopy}
-                  onChange={(e) => setMarketingCopy({...marketingCopy, bodyCopy: e.target.value})}
-                  placeholder="Elite social media caption..."
-                  className="w-full bg-transparent text-[13px] font-medium focus:outline-none placeholder:opacity-30 min-h-[120px] resize-none ios-scrollbar pr-8"
-                />
-                {marketingCopy.bodyCopy && (
-                  <button 
-                    onClick={copyBodyToClipboard}
-                    className="absolute bottom-4 right-4 p-2 bg-ios-blue/10 hover:bg-ios-blue/20 rounded-full transition-all text-ios-blue active:scale-90"
-                    title="Copy to Clipboard"
-                  >
-                    {copiedBody ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-                  </button>
-                )}
+              <div className="glass-card rounded-ios p-4">
+                <span className="text-[9px] font-black text-ios-secondaryLabel uppercase block tracking-widest mb-1.5 flex items-center gap-1.5"><Megaphone className="w-3 h-3 text-purple-500" /> SOCIAL BODY COPY (NOT IN POSTER)</span>
+                <textarea value={marketingCopy.bodyCopy} disabled={isAnyProcessing} onChange={(e) => setMarketingCopy({...marketingCopy, bodyCopy: e.target.value})} placeholder="Elite social media caption..." className="w-full bg-transparent text-[13px] min-h-[80px] focus:outline-none resize-none ios-scrollbar disabled:opacity-50" />
               </div>
-              
-              <div className="glass-card rounded-ios p-4 lg:p-5 group">
-                <span className="text-[9px] font-black text-[#8e8e93] uppercase mb-1.5 block tracking-widest flex items-center gap-2">
-                  <RefreshCw className="w-3 h-3 text-ios-blue" />
-                  Call to Action (On Poster)
-                </span>
-                <input 
-                  type="text"
-                  value={marketingCopy.cta}
-                  onChange={(e) => setMarketingCopy({...marketingCopy, cta: e.target.value})}
-                  placeholder="e.g., Secure Yours Now..."
-                  className="w-full bg-transparent text-[14px] lg:text-[15px] font-extrabold text-ios-blue focus:outline-none placeholder:opacity-30"
-                />
+              <div className="glass-card rounded-ios p-4">
+                <span className="text-[9px] font-black text-ios-secondaryLabel uppercase block tracking-widest mb-1.5 flex items-center gap-1.5"><RefreshCw className="w-3 h-3 text-ios-blue" /> CALL TO ACTION (ON POSTER)</span>
+                <input value={marketingCopy.cta} disabled={isAnyProcessing} onChange={(e) => setMarketingCopy({...marketingCopy, cta: e.target.value})} placeholder="e.g., Secure Yours Now..." className="w-full bg-transparent text-[14px] font-bold text-ios-blue focus:outline-none disabled:opacity-50" />
               </div>
             </div>
           </section>
 
-          {/* Section 04: Resolution Matrix */}
+          {/* 04 RESOLUTION MATRIX */}
           <section className="animate-pro-reveal" style={{ animationDelay: '0.3s' }}>
-            <h2 className="sidebar-section-title">04 Resolution Matrix</h2>
-            <div className="ratio-grid">
-              {ratioOptions.map(option => (
-                <button 
-                  key={option.label}
-                  onClick={() => setAspectRatio(option.label)}
-                  className={`h-24 flex flex-col items-center justify-center rounded-ios transition-all border ${
-                    aspectRatio === option.label 
-                      ? 'bg-ios-blue/10 border-ios-blue shadow-lg' 
-                      : 'glass-card border-transparent hover:border-ios-blue/30'
-                  } group active:scale-95 relative overflow-hidden`}
-                >
-                  <div className="flex items-center gap-2 mb-1 lg:gap-2.5 z-10">
-                    <div className={`${aspectRatio === option.label ? 'text-ios-blue' : 'text-[#8e8e93]'} group-hover:scale-110 transition-transform`}>
-                      {option.icon}
+            <h2 className="sidebar-section-title">04 RESOLUTION MATRIX</h2>
+            <div className="grid grid-cols-2 gap-3">
+              {RATIO_OPTIONS.map((opt) => {
+                const Icon = opt.icon;
+                const isActive = aspectRatio === opt.label;
+                return (
+                  <button 
+                    key={opt.label} 
+                    onClick={() => setAspectRatio(opt.label)}
+                    disabled={isAnyProcessing}
+                    className={`h-24 glass-card rounded-ios flex flex-col items-center justify-center gap-2 transition-all active:scale-[0.98] ${isActive ? 'ring-2 ring-ios-blue bg-ios-blue/5 shadow-[inset_0_0_15px_rgba(0,122,255,0.05)]' : 'hover:bg-white/80 dark:hover:bg-white/10'}`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <Icon className={`w-5 h-5 ${isActive ? 'text-ios-blue' : 'text-ios-secondaryLabel opacity-60'}`} />
+                      <span className={`text-[12px] font-bold ${isActive ? 'text-ios-blue' : 'text-ios-label'}`}>{opt.label.split(' (')[0]}</span>
                     </div>
-                    <span className={`text-[11px] lg:text-[12px] font-bold truncate ${aspectRatio === option.label ? 'text-ios-blue' : 'opacity-80'}`}>
-                      {option.label === 'Custom' ? 'Custom Size' : option.label.split(' (')[0]}
-                    </span>
-                  </div>
-                  <span className="text-[9px] text-[#8e8e93] font-black opacity-60 uppercase tracking-tighter z-10">
-                    {option.label === 'Custom' ? `${customWidth}x${customHeight}` : option.label.match(/\((.*?)\)/)?.[1]}
-                  </span>
-                </button>
-              ))}
+                    <span className="text-[10px] font-black text-ios-titanium opacity-60 uppercase tracking-widest">{opt.sub}</span>
+                  </button>
+                );
+              })}
             </div>
-            
-            {aspectRatio === 'Custom' && (
-              <div className="mt-4 p-5 glass-card rounded-ios animate-pro-reveal flex items-center gap-4">
-                <div className="flex-1">
-                  <span className="text-[9px] font-black text-[#8e8e93] uppercase mb-1.5 block tracking-widest">Width (px)</span>
-                  <input 
-                    type="number" 
-                    value={customWidth} 
-                    onChange={(e) => setCustomWidth(parseInt(e.target.value) || 0)} 
-                    className="w-full bg-transparent text-[14px] font-bold focus:outline-none border-b border-ios-blue/30 pb-1"
-                  />
-                </div>
-                <div className="text-[#8e8e93] font-black text-[10px] mt-4">×</div>
-                <div className="flex-1">
-                  <span className="text-[9px] font-black text-[#8e8e93] uppercase mb-1.5 block tracking-widest">Height (px)</span>
-                  <input 
-                    type="number" 
-                    value={customHeight} 
-                    onChange={(e) => setCustomHeight(parseInt(e.target.value) || 0)} 
-                    className="w-full bg-transparent text-[14px] font-bold focus:outline-none border-b border-ios-blue/30 pb-1"
-                  />
-                </div>
-              </div>
-            )}
           </section>
 
-          {/* Main Action */}
+          {/* GENERATE MASTERPIECE BUTTON: Fixed in sidebar scrolling area like Screenshot 4 */}
           <button 
             onClick={handleGeneratePoster} 
-            disabled={isGeneratingPoster || assets.length === 0 || !selectedPrompt} 
-            className="mt-4 h-16 ios-btn-primary rounded-ios text-[16px] lg:text-[17px] font-black flex items-center justify-center gap-4 active:scale-95 disabled:opacity-30"
+            disabled={isAnyProcessing || allAssets.length === 0 || !selectedPrompt} 
+            className="mt-4 h-14 ios-btn-primary rounded-full text-[15px] font-black flex items-center justify-center gap-3 active:scale-95 shadow-xl disabled:opacity-30"
           >
-            {isGeneratingPoster ? <RefreshCw className="w-6 h-6 animate-spin" /> : <Zap className="w-6 h-6 fill-current" />}
-            {isGeneratingPoster ? "Synthesizing Design..." : "Generate Masterpiece"}
+            {isGeneratingPoster ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Zap className="w-5 h-5 fill-white" />}
+            Generate Masterpiece
           </button>
         </aside>
 
-        {/* Cinematic Stage */}
-        <main className={`${activeTab === 'preview' ? 'flex' : 'hidden'} lg:flex flex-1 h-full flex-col items-center justify-center p-6 lg:p-20 overflow-hidden relative bg-[#f5f5f7] dark:bg-[#000000]`}>
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(0,122,255,0.04)_0%,transparent_75%)] pointer-events-none" />
+        {/* MAIN PREVIEW AREA: Exactly matching Screenshots 1, 2, 3 */}
+        <main className="flex-1 h-full flex flex-col items-center justify-center p-8 lg:p-12 overflow-hidden relative bg-[#f2f2f7] dark:bg-[#1c1c1e]">
+          {/* X Button at the top like Screenshot 1 */}
+          <div className="absolute top-6 left-1/2 -translate-x-1/2 z-[300]">
+            <button 
+               onClick={() => setFinalImage(null)}
+               className="w-12 h-12 bg-black/60 backdrop-blur-md rounded-full text-white flex items-center justify-center hover:scale-110 active:scale-95 transition-all"
+            >
+              <X className="w-7 h-7" />
+            </button>
+          </div>
 
-          <div className={`w-full h-full flex flex-col items-center justify-center transition-all duration-800 ${isGeneratingPoster ? 'opacity-0 scale-95 blur-2xl' : 'opacity-100 scale-100'}`}>
-            <div className={`relative rounded-ios-xl overflow-hidden glass-card flex items-center justify-center w-full h-full shadow-2xl transition-all duration-700 border border-white/40 dark:border-white/10 ${
-              aspectRatio.includes('(1:1)') ? 'aspect-square' :
-              aspectRatio.includes('(4:5)') ? 'aspect-[4/5]' :
-              aspectRatio.includes('(9:16)') ? 'aspect-[9/16]' : 'aspect-[16/9]'
-            } max-w-full max-h-full p-2.5 lg:p-3`}>
-              
-              {finalImage ? (
-                <div className="w-full h-full group relative rounded-[22px] overflow-hidden">
-                  <img src={finalImage} className="w-full h-full object-contain" />
-                  <div className="absolute inset-0 bg-black/10 opacity-0 group-hover:opacity-100 transition-all flex items-center justify-center backdrop-blur-xl">
-                    <button onClick={() => handleDownload(finalImage!, `Master_Ad_Export`)} className="w-20 h-20 lg:w-24 lg:h-24 bg-white/95 rounded-full flex items-center justify-center shadow-4xl active:scale-90 transition-all text-ios-blue hover:scale-110">
-                      <Download className="w-10 h-10 lg:w-11 lg:h-11" />
-                    </button>
-                  </div>
+          {/* Right floating menu icon like Screenshot 1 */}
+          <div className="absolute right-6 top-1/2 -translate-y-1/2 z-[300] hidden lg:block">
+            <button className="w-10 h-10 bg-black/80 rounded-full flex items-center justify-center text-white shadow-lg">
+              <Menu className="w-6 h-6" />
+            </button>
+          </div>
+
+          <div className={`relative rounded-[44px] overflow-hidden bg-white dark:bg-black/40 flex items-center justify-center w-full max-w-4xl h-full shadow-[0_40px_100px_-20px_rgba(0,0,0,0.1)] transition-all duration-700 ${isGeneratingPoster ? 'opacity-0 scale-95 blur-xl' : 'opacity-100 scale-100'} p-8 border border-white dark:border-white/5`}>
+            {finalImage ? (
+              <div className="w-full h-full group relative rounded-[32px] overflow-hidden">
+                <img src={finalImage} className="w-full h-full object-contain" />
+                <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition-all flex items-center justify-center gap-6 backdrop-blur-md">
+                  <button onClick={() => handleDownloadImage(finalImage)} className="w-16 h-16 bg-white rounded-full flex items-center justify-center text-ios-blue shadow-2xl active:scale-90 hover:scale-110 transition-all"><Download className="w-8 h-8" /></button>
+                  <button onClick={() => setActiveTab('studio')} className="w-16 h-16 bg-ios-blue rounded-full flex items-center justify-center text-white shadow-2xl active:scale-90 hover:scale-110 transition-all"><Edit3 className="w-8 h-8" /></button>
                 </div>
-              ) : (
-                <div className="flex flex-col items-center gap-6 lg:gap-10 opacity-15">
-                  <div className="w-24 h-24 lg:w-28 lg:h-28 rounded-ios glass-card flex items-center justify-center text-ios-blue shadow-inner">
-                    <Monitor className="w-12 h-12 lg:w-14 lg:h-14" />
-                  </div>
-                  <div className="text-center">
-                    <p className="text-[18px] lg:text-[22px] font-black uppercase tracking-[0.4em]">Neural Output Stage</p>
-                    <p className="text-[11px] lg:text-[13px] font-bold mt-2 opacity-60 uppercase">{aspectRatio === 'Custom' ? `${customWidth}x${customHeight}` : aspectRatio}</p>
-                  </div>
+              </div>
+            ) : (
+              <div className="text-center opacity-20 flex flex-col items-center gap-6">
+                <div className="w-20 h-20 text-ios-blue/40"><Monitor className="w-full h-full" /></div>
+                <div>
+                   <p className="text-[28px] font-black uppercase tracking-[0.4em] titanium-text mb-2">NEURAL OUTPUT STAGE</p>
+                   <p className="text-[12px] font-bold uppercase tracking-widest text-ios-secondaryLabel">{aspectRatio.toUpperCase()}</p>
                 </div>
-              )}
-            </div>
-            
-            {finalImage && (
-              <div className="mt-8 lg:mt-12 flex flex-col lg:flex-row gap-4 lg:gap-5 animate-pro-reveal w-full lg:w-auto px-4">
-                <button onClick={() => handleDownload(finalImage!, `Master_Export`)} className="px-10 lg:px-12 py-4 lg:py-5 bg-ios-blue text-white rounded-full text-[15px] lg:text-[16px] font-black shadow-3xl hover:brightness-110 active:scale-95 transition-all flex items-center justify-center gap-4">
-                  Export Design <Download className="w-5 h-5 lg:w-6 lg:h-6" />
-                </button>
-                <button onClick={() => setActiveTab('studio')} className="px-10 lg:px-12 py-4 lg:py-5 glass-card text-[#1d1d1f] dark:text-white rounded-full text-[15px] lg:text-[16px] font-black hover:bg-white/80 dark:hover:bg-white/10 active:scale-95 transition-all flex items-center justify-center gap-4">
-                  New Variation <RotateCcw className="w-5 h-5 lg:w-6 lg:h-6" />
-                </button>
               </div>
             )}
           </div>
 
           {isGeneratingPoster && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-8 z-[300] animate-pro-reveal text-center px-6">
-              <div className="relative mb-4">
-                <div className="w-28 h-28 lg:w-32 lg:h-32 border-[8px] border-ios-blue/10 border-t-ios-blue rounded-full animate-spin"></div>
-                <div className="absolute inset-0 m-auto w-12 h-12 lg:w-14 lg:h-14 bg-ios-blue/5 rounded-full flex items-center justify-center">
-                   <Sparkles className="w-7 h-7 lg:w-8 lg:h-8 text-ios-blue animate-pulse" />
-                </div>
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-10 z-[1000] bg-[#f2f2f7]/60 dark:bg-[#1c1c1e]/60 backdrop-blur-2xl animate-pro-reveal text-center">
+              <div className="relative">
+                <div className="w-36 h-36 border-[12px] border-ios-blue/10 border-t-ios-blue rounded-full animate-spin"></div>
+                <Sparkles className="absolute inset-0 m-auto w-12 h-12 text-ios-blue animate-pulse" />
               </div>
               <div className="space-y-3">
-                <p className="text-[24px] lg:text-[28px] font-black tracking-tighter titanium-text">Neural Art Direction</p>
-                <div className="h-6 overflow-hidden">
-                  <p key={loadingStep} className="text-[12px] lg:text-[14px] font-bold text-[#8e8e93] tracking-widest uppercase animate-pro-reveal opacity-80">
-                    {LOADING_MESSAGES[loadingStep]}
-                  </p>
-                </div>
+                <p className="text-[24px] font-black tracking-tighter titanium-text uppercase">Synthesizing Creative</p>
+                <p className="text-[13px] font-bold text-ios-secondaryLabel uppercase tracking-[0.2em]">{LOADING_MESSAGES[loadingStep]}</p>
               </div>
             </div>
           )}
         </main>
       </div>
 
-      {/* History Archive */}
-      {showHistory && (
-        <div className="fixed inset-0 z-[500] flex">
-          <div className="absolute inset-0 bg-black/40 backdrop-blur-xl transition-all duration-700" onClick={() => setShowHistory(false)} />
-          <aside className="relative ml-auto w-full sm:w-[460px] h-full glass-nav shadow-[0_0_120px_rgba(0,0,0,0.6)] flex flex-col p-8 lg:p-10 animate-pro-reveal border-l border-white/10">
-            <div className="flex items-center justify-between mb-8 lg:mb-12">
-              <h2 className="text-[30px] lg:text-[36px] font-black tracking-tighter titanium-text">Archives</h2>
-              <button onClick={() => setShowHistory(false)} className="w-10 h-10 lg:w-12 lg:h-12 flex items-center justify-center bg-black/5 dark:bg-white/10 rounded-full text-[#8e8e93] active:scale-90 transition-all"><X className="w-6 h-6 lg:w-8 lg:h-8" /></button>
-            </div>
-            <div className="flex-1 overflow-y-auto space-y-6 lg:space-y-8 pb-32 ios-scrollbar pr-2 lg:pr-3">
-              {history.length === 0 ? (
-                <div className="h-full flex flex-col items-center justify-center opacity-25 gap-8 text-center">
-                  <History className="w-12 h-12 opacity-40 mb-2" />
-                  <p className="text-[16px] lg:text-[18px] font-black uppercase tracking-widest">Dock Empty</p>
-                </div>
-              ) : (
-                history.map(item => (
-                  <div 
-                    key={item.id} 
-                    className="rounded-ios overflow-hidden glass-card transition-all relative border border-white/10 shadow-xl group" 
-                  >
-                    <div className="aspect-[16/10] relative cursor-pointer" onClick={() => {
-                      setFinalImage(item.imageUrl);
-                      setShowHistory(false);
-                      setActiveTab('preview');
-                    }}>
-                      <img src={item.imageUrl} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700" />
-                      <div className="absolute bottom-0 inset-x-0 p-4 lg:p-5 bg-black/65 backdrop-blur-2xl border-t border-white/10">
-                        <p className="text-white text-[11px] lg:text-[12px] font-black truncate uppercase tracking-widest leading-tight">{item.prompt}</p>
-                        <p className="text-white/45 text-[9px] lg:text-[10px] font-bold mt-1 lg:mt-1.5 uppercase tracking-tighter">{new Date(item.timestamp).toLocaleDateString()} — {item.ratio === 'Custom' ? `${item.customWidth}x${item.customHeight}` : item.ratio.split(' ')[0]}</p>
-                      </div>
-                    </div>
-                    <div className="absolute top-3 right-3 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button 
-                        onClick={(e) => { e.stopPropagation(); editHistoryItem(item); }}
-                        className="w-9 h-9 bg-white rounded-full flex items-center justify-center text-ios-blue shadow-xl hover:scale-110 active:scale-90 transition-all"
-                        title="Re-use and Edit Prompt/Copy"
-                      >
-                        <Edit3 className="w-5 h-5" />
-                      </button>
-                      <button 
-                        onClick={(e) => { e.stopPropagation(); handleDownload(item.imageUrl, `Archive`); }} 
-                        className="w-9 h-9 bg-white rounded-full flex items-center justify-center text-ios-blue shadow-xl hover:scale-110 active:scale-90 transition-all"
-                      >
-                        <Download className="w-5 h-5" />
-                      </button>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </aside>
-        </div>
-      )}
+      {/* BOTTOM NAV BAR: Matches Screenshot 1 and 3 */}
+      <nav className="h-20 glass-nav flex items-center justify-around fixed bottom-0 w-full z-[400] border-t border-black/[0.05] dark:border-white/[0.05]">
+        <button 
+          onClick={() => setActiveTab('studio')} 
+          className={`flex flex-col items-center gap-1.5 transition-all w-24 ${activeTab === 'studio' ? 'text-ios-blue scale-110' : 'text-ios-secondaryLabel opacity-40 hover:opacity-100'}`}
+        >
+          <Layers className="w-7 h-7" />
+          <span className="text-[10px] font-black uppercase tracking-widest">STUDIO</span>
+        </button>
+        <button 
+          onClick={() => setActiveTab('preview')} 
+          className={`flex flex-col items-center gap-1.5 transition-all w-24 ${activeTab === 'preview' ? 'text-ios-blue scale-110' : 'text-ios-secondaryLabel opacity-40 hover:opacity-100'}`}
+        >
+          <Monitor className="w-7 h-7" />
+          <span className="text-[10px] font-black uppercase tracking-widest">PREVIEW</span>
+        </button>
+      </nav>
 
-      {/* Global Pro Alert */}
+      {/* SYSTEM ALERT MODAL */}
       {error && (
-        <div className="fixed inset-0 z-[1000] flex items-center justify-center p-6 bg-black/50 backdrop-blur-3xl">
-          <div className="w-full max-w-[420px] glass-card rounded-ios-lg overflow-hidden flex flex-col items-center text-center shadow-4xl border border-white/10 p-8 animate-pro-reveal">
-            <div className="w-16 h-16 bg-red-500/10 rounded-full flex items-center justify-center mb-5">
-              <AlertCircle className="w-9 h-9 text-red-500" />
-            </div>
-            <h3 className="text-[20px] font-black mb-2 tracking-tight">Studio System Alert</h3>
-            <p className="text-[13px] leading-relaxed text-[#8e8e93] font-bold mb-6">{error}</p>
-            <button onClick={() => setError(null)} className="w-full h-12 bg-ios-blue text-white rounded-ios font-black active:scale-95 transition-all shadow-lg">Acknowledged</button>
+        <div className="fixed inset-0 z-[1000] flex items-center justify-center p-6 bg-black/40 backdrop-blur-md">
+          <div className="w-full max-w-sm glass-card rounded-[32px] p-10 text-center animate-pro-reveal border border-white/20 shadow-2xl">
+            <div className="w-16 h-16 bg-red-500/10 rounded-full flex items-center justify-center mb-6 mx-auto"><AlertCircle className="w-8 h-8 text-red-500" /></div>
+            <h3 className="text-[20px] font-black mb-2">Studio System Alert</h3>
+            <p className="text-[13px] text-ios-secondaryLabel font-bold mb-8">{error}</p>
+            <button onClick={() => setError(null)} className="w-full h-12 bg-ios-blue text-white rounded-full font-black active:scale-95 shadow-lg">Acknowledged</button>
           </div>
         </div>
       )}
 
-      {/* Mobile Nav Bridge */}
-      <nav className="lg:hidden h-24 glass-nav flex items-center justify-around fixed bottom-0 w-full z-[400] pb-8 border-t border-black/[0.05]">
-        <button onClick={() => setActiveTab('studio')} className={`flex flex-col items-center gap-1.5 transition-all w-1/2 ${activeTab === 'studio' ? 'text-ios-blue' : 'text-[#8e8e93]'}`}>
-          <Layers className="w-6 h-6" />
-          <span className="text-[10px] font-black uppercase tracking-tighter">Studio</span>
-        </button>
-        <button onClick={() => setActiveTab('preview')} className={`flex flex-col items-center gap-1.5 transition-all w-1/2 ${activeTab === 'preview' ? 'text-ios-blue' : 'text-[#8e8e93]'}`}>
-          <Monitor className="w-6 h-6" />
-          <span className="text-[10px] font-black uppercase tracking-tighter">Preview</span>
-        </button>
-      </nav>
+      {/* ARCHIVES / HISTORY MODAL */}
+      {showHistory && (
+        <div className="fixed inset-0 z-[500] flex">
+          <div className="absolute inset-0 bg-black/30 backdrop-blur-lg transition-all" onClick={() => setShowHistory(false)} />
+          <aside className="relative ml-auto w-full sm:w-[460px] h-full glass-nav shadow-2xl flex flex-col p-8 lg:p-10 animate-pro-reveal border-l border-white/10">
+            <div className="flex items-center justify-between mb-10">
+              <h2 className="text-[28px] font-extrabold tracking-tighter titanium-text uppercase">Studio Archives</h2>
+              <button onClick={() => setShowHistory(false)} className="w-10 h-10 flex items-center justify-center bg-black/5 dark:bg-white/10 rounded-full text-ios-secondaryLabel hover:text-red-500"><X className="w-6 h-6" /></button>
+            </div>
+            <div className="flex-1 overflow-y-auto space-y-6 ios-scrollbar pr-2">
+              {history.map(item => (
+                <div key={item.id} className="rounded-ios overflow-hidden glass-card border border-white/10 group relative shadow-md">
+                  <img src={item.imageUrl} className="w-full aspect-video object-cover cursor-pointer hover:scale-105 transition-all duration-700" onClick={() => { setFinalImage(item.imageUrl); setShowHistory(false); setActiveTab('preview'); }} />
+                  <div className="p-5">
+                    <p className="text-[11px] font-black uppercase tracking-widest truncate mb-1.5">{item.prompt}</p>
+                    <p className="text-[9px] text-ios-titanium font-black uppercase flex items-center gap-1.5"><Clock className="w-3.5 h-3.5" /> {new Date(item.timestamp).toLocaleString()}</p>
+                  </div>
+                  <button onClick={() => handleDownloadImage(item.imageUrl)} className="absolute top-4 right-4 w-10 h-10 bg-white/90 rounded-full flex items-center justify-center text-ios-blue shadow-xl opacity-0 group-hover:opacity-100 transition-all"><Download className="w-5 h-5" /></button>
+                </div>
+              ))}
+            </div>
+          </aside>
+        </div>
+      )}
     </div>
   );
 };
