@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   Sparkles, 
   Image as ImageIcon, 
@@ -16,21 +17,22 @@ import {
   Layers,
   Maximize,
   Minimize,
-  Trash2,
   Edit3,
-  Megaphone,
   Smartphone,
   CheckCircle2,
-  PenTool,
   Clock,
-  Menu,
-  MonitorCheck,
-  Loader2
+  Loader2,
+  Megaphone,
+  ShieldAlert,
+  Trash2,
+  Eraser,
+  Undo2,
+  Wand2,
+  Cpu
 } from 'lucide-react';
 import { 
   Asset, 
   AssetType, 
-  AnalysisResult, 
   MarketingCopy, 
   AspectRatio,
   HistoryItem
@@ -44,7 +46,6 @@ const LOADING_MESSAGES = [
   "Synthesizing material physics...",
   "Aligning brand typography...",
   "Color grading textures...",
-  "Finalizing production asset...",
   "Polishing pixel-perfect details..."
 ];
 
@@ -56,35 +57,36 @@ const RATIO_OPTIONS: { label: AspectRatio; icon: any; sub: string }[] = [
   { label: 'Facebook Cover (16:9)', icon: Monitor, sub: '16:9' },
   { label: 'YouTube Thumbnail (16:9)', icon: Monitor, sub: '16:9' },
   { label: 'LinkedIn Feed (4:5)', icon: Layers, sub: '4:5' },
-  { label: 'Custom', icon: Edit3, sub: '1920X1080' },
+  { label: 'Custom Size', icon: Edit3, sub: 'USER DEFINED' },
 ];
 
 const App: React.FC = () => {
-  const [subjectAsset, setSubjectAsset] = useState<Asset | null>(null);
-  const [contextAsset, setContextAsset] = useState<Asset | null>(null);
+  const [subjectAssets, setSubjectAssets] = useState<Asset[]>([]);
+  const [contextAssets, setContextAssets] = useState<Asset[]>([]);
   const [isProcessingCreative, setIsProcessingCreative] = useState(false);
+  const [isProcessingCopy, setIsProcessingCopy] = useState(false);
   const [selectedPrompt, setSelectedPrompt] = useState('');
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>('Instagram Square (1:1)');
   const [customWidth, setCustomWidth] = useState<number>(1920);
   const [customHeight, setCustomHeight] = useState<number>(1080);
-  const [marketingCopy, setMarketingCopy] = useState<MarketingCopy>({ headline: '', bodyCopy: '', cta: '' });
+  const [marketingCopy, setMarketingCopy] = useState<MarketingCopy>({ headline: '', body: '', cta: '' });
   const [isGeneratingPoster, setIsGeneratingPoster] = useState(false);
   const [loadingStep, setLoadingStep] = useState(0);
   const [finalImage, setFinalImage] = useState<string | null>(null);
   const [isRefining, setIsRefining] = useState(false);
   const [bgRemovalEnabled, setBgRemovalEnabled] = useState(true);
+  const [isArtDirectorMode, setIsArtDirectorMode] = useState(false);
+  const [isHighRes, setIsHighRes] = useState(false);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [activeTab, setActiveTab] = useState<'studio' | 'preview'>('studio');
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ message: string; type: 'quota' | 'generic' } | null>(null);
   const [isDarkMode, setIsDarkMode] = useState(() => localStorage.getItem('studio-theme') === 'dark');
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [cooldownTime, setCooldownTime] = useState(0);
   
-  const desiredFullscreenRef = useRef(false);
-
-  // Decoupled processing states: block only core creative generation
-  const allAssets = [subjectAsset, contextAsset].filter(Boolean) as Asset[];
-  const isGenerating = isProcessingCreative || isRefining || isGeneratingPoster;
+  const isGenerating = isProcessingCreative || isProcessingCopy || isRefining || isGeneratingPoster || cooldownTime > 0;
+  const allAssets = [...subjectAssets, ...contextAssets];
 
   useEffect(() => {
     loadHistory();
@@ -92,11 +94,7 @@ const App: React.FC = () => {
       setIsFullscreen(!!(document.fullscreenElement || (document as any).webkitFullscreenElement));
     };
     document.addEventListener('fullscreenchange', handleFullscreenChange);
-    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
-    return () => {
-      document.removeEventListener('fullscreenchange', handleFullscreenChange);
-      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
-    };
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
   }, []);
 
   useEffect(() => {
@@ -119,55 +117,48 @@ const App: React.FC = () => {
     return () => clearInterval(interval);
   }, [isGeneratingPoster]);
 
-  // Automatically trigger background removal if toggle is flipped ON for existing assets
   useEffect(() => {
-    if (bgRemovalEnabled) {
-      if (subjectAsset && !subjectAsset.isolatedBase64 && subjectAsset.status !== 'processing') {
-        handleIsolateSubject(subjectAsset, true);
-      }
-      if (contextAsset && !contextAsset.isolatedBase64 && contextAsset.status !== 'processing') {
-        handleIsolateSubject(contextAsset, false);
-      }
+    if (cooldownTime > 0) {
+      const timer = setTimeout(() => setCooldownTime(prev => prev - 1), 1000);
+      return () => clearTimeout(timer);
     }
-  }, [bgRemovalEnabled]);
+  }, [cooldownTime]);
+
+  const loadHistory = async () => setHistory(await db.getHistory());
 
   const toggleFullscreen = useCallback(async () => {
     try {
       const elem = document.documentElement;
-      if (!document.fullscreenElement && !(document as any).webkitFullscreenElement) {
-        desiredFullscreenRef.current = true;
+      if (!document.fullscreenElement) {
         if (elem.requestFullscreen) await elem.requestFullscreen();
-        else if ((elem as any).webkitRequestFullscreen) await (elem as any).webkitRequestFullscreen();
       } else {
-        desiredFullscreenRef.current = false;
         if (document.exitFullscreen) await document.exitFullscreen();
-        else if ((document as any).webkitExitFullscreen) await (document as any).webkitExitFullscreen();
       }
     } catch (e) { console.warn("FS_ERR", e); }
   }, []);
 
-  const handleIsolateSubject = async (asset: Asset, isSubject: boolean) => {
-    console.log(`[Action] Triggering Background Removal for ${isSubject ? 'Subject' : 'Context'}`);
-    
-    const updateAsset = (status: any, extra = {}) => {
-      if (isSubject) setSubjectAsset(prev => prev && prev.id === asset.id ? { ...prev, status, ...extra } : prev);
-      else setContextAsset(prev => prev && prev.id === asset.id ? { ...prev, status, ...extra } : prev);
-    };
-
-    updateAsset('processing');
+  const handleIsolateSubject = async (asset: Asset, type: AssetType) => {
+    const setter = type === AssetType.PRODUCT ? setSubjectAssets : setContextAssets;
+    setter(prev => prev.map(a => a.id === asset.id ? { ...a, status: 'processing' } : a));
     try {
       const res = await gemini.isolateSubject(asset);
-      updateAsset('completed', { isolatedBase64: res.base64, isolatedUrl: res.url });
+      setter(prev => prev.map(a => a.id === asset.id ? { ...a, status: 'completed', isolatedBase64: res.base64, isolatedUrl: res.url } : a));
     } catch (err: any) {
-      updateAsset('failed', { error: err.message });
-      setError(err.message);
+      setter(prev => prev.map(a => a.id === asset.id ? { ...a, status: 'failed' } : a));
+      if (err.message?.includes("QUOTA")) {
+        setError({ message: "Gemini capacity reached. Cooling down...", type: 'quota' });
+        setCooldownTime(30);
+      } else {
+        setError({ message: err.message, type: 'generic' });
+      }
     }
   };
 
-  const processFile = async (file: File, type: AssetType) => {
-    // We removed the block here so users can always replace assets
+  const processFiles = async (files: FileList, type: AssetType) => {
     setError(null);
-    try {
+    const newAssets: Asset[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
       const reader = new FileReader();
       const assetPromise = new Promise<Asset>((resolve, reject) => {
         reader.onload = async () => {
@@ -187,51 +178,88 @@ const App: React.FC = () => {
         };
         reader.readAsDataURL(file);
       });
-      
-      const newAsset = await assetPromise;
-      if (type === AssetType.PRODUCT) {
-        setSubjectAsset(newAsset);
-        if (bgRemovalEnabled) handleIsolateSubject(newAsset, true);
-      } else {
-        setContextAsset(newAsset);
-        if (bgRemovalEnabled) handleIsolateSubject(newAsset, false);
-      }
+      const asset = await assetPromise;
+      newAssets.push(asset);
+    }
+    
+    const setter = type === AssetType.PRODUCT ? setSubjectAssets : setContextAssets;
+    setter(prev => [...prev, ...newAssets]);
 
-    } catch (e) { setError("Error reading file."); }
+    if (bgRemovalEnabled) {
+      for (const a of newAssets) {
+        await handleIsolateSubject(a, type);
+      }
+    }
   };
 
-  const loadHistory = async () => { setHistory(await db.getHistory()); };
-  
-  const handleCreativeIntelligence = async () => {
+  const handleSmartScan = async () => {
     if (isGenerating || allAssets.length === 0) return;
     setIsProcessingCreative(true);
     try {
-      const { analysis, copy } = await gemini.getCreativeIntelligence(allAssets);
-      setSelectedPrompt(analysis.suggestedPrompt);
-      setMarketingCopy(copy);
-    } catch (err: any) { setError(err.message); }
-    finally { setIsProcessingCreative(false); }
+      const data = await gemini.performCreativeDeepDive(allAssets);
+      let prompt = data.analysis.suggestedPrompt;
+      
+      // Auto-Refine if Art Director Mode is ON
+      if (isArtDirectorMode) {
+        setIsRefining(true);
+        prompt = await gemini.refinePrompt(prompt);
+        setIsRefining(false);
+      }
+      
+      setSelectedPrompt(prompt);
+    } catch (err: any) { 
+      if (err.message?.includes("QUOTA")) {
+        setError({ message: "Daily studio capacity reached.", type: 'quota' });
+        setCooldownTime(30);
+      } else {
+        setError({ message: err.message, type: 'generic' });
+      }
+    }
+    finally { 
+      setIsProcessingCreative(false); 
+      setIsRefining(false);
+    }
+  };
+
+  const handleSmartCopy = async () => {
+    if (isGenerating || allAssets.length === 0) return;
+    setIsProcessingCopy(true);
+    try {
+      const data = await gemini.performCreativeDeepDive(allAssets);
+      setMarketingCopy(data.copy);
+    } catch (err: any) { 
+      if (err.message?.includes("QUOTA")) {
+        setError({ message: "Engine cooling down.", type: 'quota' });
+        setCooldownTime(30);
+      } else {
+        setError({ message: err.message, type: 'generic' });
+      }
+    }
+    finally { setIsProcessingCopy(false); }
+  };
+
+  const clearCopyOnly = () => {
+    setMarketingCopy({ headline: '', body: '', cta: '' });
   };
 
   const handleRefinePrompt = async () => {
     if (isGenerating || !selectedPrompt) return;
     setIsRefining(true);
     try {
-      setSelectedPrompt(await gemini.refinePrompt(selectedPrompt, allAssets));
-    } catch (err: any) { setError(err.message); }
+      setSelectedPrompt(await gemini.refinePrompt(selectedPrompt));
+    } catch (err: any) { 
+      if (err.message?.includes("QUOTA")) {
+        setError({ message: "Refining engine throttled.", type: 'quota' });
+        setCooldownTime(30);
+      } else {
+        setError({ message: err.message, type: 'generic' });
+      }
+    }
     finally { setIsRefining(false); }
   };
 
   const handleGeneratePoster = async () => {
     if (isGenerating || allAssets.length === 0 || !selectedPrompt) return;
-    
-    // Safety: ensure all assets that ARE processing finish first
-    const isStillIsolating = allAssets.some(a => a.status === 'processing');
-    if (isStillIsolating) {
-        setError("Please wait for background removal to complete before generating.");
-        return;
-    }
-
     setIsGeneratingPoster(true);
     setActiveTab('preview');
     try {
@@ -241,7 +269,9 @@ const App: React.FC = () => {
         aspectRatio, 
         bgRemovalEnabled, 
         marketingCopy,
-        aspectRatio === 'Custom' ? { width: customWidth, height: customHeight } : undefined
+        customWidth,
+        customHeight,
+        isHighRes
       );
       setFinalImage(img);
       await db.saveHistoryItem({ 
@@ -250,273 +280,356 @@ const App: React.FC = () => {
           prompt: selectedPrompt, 
           copy: marketingCopy, 
           ratio: aspectRatio,
-          customWidth: aspectRatio === 'Custom' ? customWidth : undefined,
-          customHeight: aspectRatio === 'Custom' ? customHeight : undefined,
+          width: aspectRatio === 'Custom Size' ? customWidth : undefined,
+          height: aspectRatio === 'Custom Size' ? customHeight : undefined,
           timestamp: Date.now() 
       });
       loadHistory();
-    } catch (err: any) { setError(err.message); setActiveTab('studio'); }
+    } catch (err: any) { 
+      if (err.message?.includes("QUOTA")) {
+        setError({ message: "Poster printer exhausted.", type: 'quota' });
+        setCooldownTime(60);
+      } else {
+        setError({ message: err.message, type: 'generic' });
+      }
+      setActiveTab('studio'); 
+    }
     finally { setIsGeneratingPoster(false); }
   };
 
-  const handleDownloadImage = (url: string, prefix: string = 'Master') => {
+  const handleDownloadImage = (url: string) => {
     const link = document.createElement('a');
     link.href = url;
-    link.download = `MrJ_Studio_${prefix}_${Date.now()}.png`;
+    link.download = `Masterpiece_${Date.now()}.png`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
   };
 
   return (
-    <div className="fixed inset-0 flex flex-col overflow-hidden text-[#1d1d1f] dark:text-[#f5f5f7] bg-[#f5f5f7] dark:bg-[#000000] selection:bg-ios-blue selection:text-white">
+    <div className="fixed inset-0 flex flex-col text-[#1d1d1f] dark:text-[#f5f5f7] bg-[#fbfbfd] dark:bg-[#000000] overflow-hidden selection:bg-ios-blue selection:text-white">
       {/* HEADER */}
-      <header className="h-16 glass-nav px-6 lg:px-12 flex items-center justify-between z-[200]">
+      <header className="h-14 glass-effect px-8 flex items-center justify-between z-[200] border-b border-black/[0.03] dark:border-white/[0.05]">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-ios-blue rounded-ios flex items-center justify-center shadow-lg transition-transform hover:scale-105">
+          <div className="w-10 h-10 bg-ios-blue rounded-xl flex items-center justify-center shadow-lg shadow-ios-blue/20">
             <Sparkles className="w-6 h-6 text-white" />
           </div>
-          <div>
-            <h1 className="text-[17px] font-extrabold tracking-tight titanium-text">MrJ Studio Pro</h1>
-            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-ios-secondaryLabel opacity-60">ELITE AD SYNTHESIS</p>
+          <div className="flex flex-col">
+            <h1 className="text-[16px] font-extrabold tracking-tight leading-none mb-0.5">MrJ Studio Pro</h1>
+            <span className="text-[8px] font-black text-ios-gray/60 uppercase tracking-[0.3em]">Elite Ad Synthesis</span>
           </div>
         </div>
-        <div className="flex items-center gap-1 p-1 bg-black/5 dark:bg-white/5 rounded-ios-sm">
-          <button onClick={toggleFullscreen} className="w-9 h-9 flex items-center justify-center hover:bg-white dark:hover:bg-white/10 rounded-ios-sm text-ios-blue transition-all active:scale-90">
-            {isFullscreen ? <Minimize className="w-5 h-5" /> : <Maximize className="w-5 h-5" />}
-          </button>
-          <button onClick={() => setIsDarkMode(!isDarkMode)} className="w-9 h-9 flex items-center justify-center hover:bg-white dark:hover:bg-white/10 rounded-ios-sm text-ios-blue transition-all active:scale-90">
-            {isDarkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
-          </button>
-          <button onClick={() => setShowHistory(true)} className="w-9 h-9 flex items-center justify-center hover:bg-white dark:hover:bg-white/10 rounded-ios-sm text-ios-blue transition-all active:scale-90">
-            <History className="w-5 h-5" />
-          </button>
+        <div className="flex items-center gap-2">
+          {cooldownTime > 0 && (
+            <div className="flex items-center gap-2 px-3 py-1 bg-ios-blue/10 rounded-full text-ios-blue text-[10px] font-bold animate-pulse">
+               <Clock className="w-3 h-3" /> {cooldownTime}S
+            </div>
+          )}
+          <div className="flex items-center bg-black/5 dark:bg-white/10 p-1 rounded-full">
+            <button 
+              onClick={toggleFullscreen} 
+              aria-label="Toggle Fullscreen"
+              className="w-8 h-8 flex items-center justify-center hover:bg-black/10 dark:hover:bg-white/10 rounded-full text-[#1d1d1f] dark:text-white transition-all"
+            >
+              {isFullscreen ? <Minimize className="w-4 h-4" /> : <Maximize className="w-4 h-4" />}
+            </button>
+            <button 
+              onClick={() => setIsDarkMode(!isDarkMode)} 
+              aria-label="Toggle Dark Mode"
+              className="w-8 h-8 flex items-center justify-center hover:bg-black/10 dark:hover:bg-white/10 rounded-full text-[#1d1d1f] dark:text-white transition-all"
+            >
+              {isDarkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+            </button>
+            <button 
+              onClick={() => setShowHistory(true)} 
+              aria-label="View Design History"
+              className="w-8 h-8 flex items-center justify-center hover:bg-black/10 dark:hover:bg-white/10 rounded-full text-[#1d1d1f] dark:text-white transition-all"
+            >
+              <History className="w-4 h-4" />
+            </button>
+          </div>
         </div>
       </header>
 
       <div className="flex-1 flex flex-col lg:flex-row relative overflow-hidden">
-        {/* SIDEBAR */}
-        <aside className={`${activeTab === 'studio' ? 'flex' : 'hidden'} lg:flex w-full lg:w-[420px] h-full flex-col p-6 lg:p-8 gap-8 overflow-y-auto ios-scrollbar pb-48 border-r border-black/[0.05] dark:border-white/[0.05]`}>
+        {/* LEFT STUDIO SIDEBAR */}
+        <aside className={`${activeTab === 'studio' ? 'flex' : 'hidden'} lg:flex w-full lg:w-[420px] h-full flex-col p-6 lg:p-10 gap-10 overflow-y-auto custom-scrollbar pb-32 border-r border-black/[0.03] dark:border-white/[0.05]`}>
           
           {/* 01 STUDIO ASSETS */}
-          <section className="animate-pro-reveal">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="sidebar-section-title !mb-0">01 STUDIO ASSETS</h2>
+          <section className="animate-ios-in">
+            <div className="flex items-center justify-between mb-5 px-1">
+              <h2 className="text-[12px] font-black text-[#8e8e93] uppercase tracking-[0.2em]">01 Studio Assets</h2>
               <button 
                 onClick={() => setBgRemovalEnabled(!bgRemovalEnabled)} 
-                disabled={isGenerating}
-                className={`px-4 py-1.5 rounded-full text-[10px] font-black flex items-center gap-1.5 transition-all ${bgRemovalEnabled ? 'bg-[#34C759] text-white shadow-md' : 'bg-transparent border border-gray-400 text-gray-500'}`}
+                aria-label="Toggle Background Removal"
+                className={`px-4 py-1.5 rounded-full text-[10px] font-bold transition-all flex items-center gap-2.5 ${bgRemovalEnabled ? 'bg-[#34C759] text-white shadow-lg' : 'bg-black/5 dark:bg-white/5 text-[#8e8e93]'}`}
               >
-                <CheckCircle2 className={`w-3.5 h-3.5 ${bgRemovalEnabled ? 'opacity-100' : 'opacity-30'}`} />
-                BG Remove
+                <CheckCircle2 className="w-4 h-4" /> BG Remove
               </button>
             </div>
             
-            <div className="grid grid-cols-2 gap-4">
-              {/* Main Subject Slot */}
-              <div className="relative group">
-                <label className={`h-32 rounded-ios glass-card flex flex-col items-center justify-center gap-2 cursor-pointer hover:bg-white/90 dark:hover:bg-white/10 transition-all active:scale-95 overflow-hidden`}>
-                  <input type="file" onChange={(e) => e.target.files?.[0] && processFile(e.target.files[0], AssetType.PRODUCT)} className="hidden" />
-                  {subjectAsset ? (
-                    <div className="absolute inset-0 w-full h-full">
-                        <img src={(bgRemovalEnabled && subjectAsset.isolatedUrl) ? subjectAsset.isolatedUrl : subjectAsset.url} className={`w-full h-full object-contain transition-all duration-500 ${subjectAsset.status === 'processing' ? 'blur-md grayscale' : ''}`} />
-                        {subjectAsset.status === 'processing' && (
-                            <div className="absolute inset-0 flex items-center justify-center bg-black/20">
-                                <Loader2 className="w-8 h-8 text-white animate-spin" />
-                            </div>
-                        )}
-                        <button onClick={(e) => { e.preventDefault(); setSubjectAsset(null); }} className="absolute top-2 right-2 w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all z-10"><X className="w-4 h-4" /></button>
-                    </div>
-                  ) : (
-                    <>
-                        <PlusCircle className="w-7 h-7 text-ios-blue" />
-                        <span className="text-[10px] font-black uppercase tracking-widest opacity-60">MAIN SUBJECT</span>
-                    </>
-                  )}
+            <div className="grid grid-cols-2 gap-5">
+              <div className="space-y-4">
+                <label className="relative h-44 rounded-[32px] bg-white dark:bg-[#1c1c1e] border border-black/[0.05] dark:border-white/[0.05] flex flex-col items-center justify-center gap-3 cursor-pointer hover:bg-black/[0.01] dark:hover:bg-white/[0.01] transition-all shadow-sm overflow-hidden text-center group">
+                  <input type="file" multiple onChange={(e) => e.target.files && processFiles(e.target.files, AssetType.PRODUCT)} className="hidden" aria-label="Upload Product Assets" />
+                  <div className="w-14 h-14 rounded-full bg-ios-blue/10 flex items-center justify-center text-ios-blue group-hover:scale-110 transition-transform">
+                    <PlusCircle className="w-7 h-7" />
+                  </div>
+                  <span className="text-[11px] font-black text-[#8e8e93] uppercase tracking-widest">Main Subject</span>
                 </label>
+                {subjectAssets.length > 0 && (
+                  <div className="grid grid-cols-3 gap-2.5 px-1">
+                    {subjectAssets.map(a => (
+                      <div key={a.id} className="relative aspect-square rounded-2xl overflow-hidden bg-black/[0.02] dark:bg-white/[0.02] border border-black/[0.05] shadow-sm group">
+                        <img src={a.isolatedUrl || a.url} className="w-full h-full object-contain p-1.5" alt={a.name} />
+                        <button 
+                          onClick={() => setSubjectAssets(prev => prev.filter(x => x.id !== a.id))} 
+                          aria-label={`Remove ${a.name}`}
+                          className="absolute top-1.5 right-1.5 w-6 h-6 bg-black/60 text-white rounded-full flex items-center justify-center backdrop-blur-md opacity-0 group-hover:opacity-100 transition-all hover:bg-red-500"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                        {a.status === 'processing' && (
+                          <div className="absolute inset-0 bg-black/30 flex items-center justify-center backdrop-blur-[2px]">
+                            <Loader2 className="w-6 h-6 text-white animate-spin" />
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
-              {/* Context Slot */}
-              <div className="relative group">
-                <label className={`h-32 rounded-ios glass-card flex flex-col items-center justify-center gap-2 cursor-pointer hover:bg-white/90 dark:hover:bg-white/10 transition-all active:scale-95 overflow-hidden`}>
-                  <input type="file" onChange={(e) => e.target.files?.[0] && processFile(e.target.files[0], AssetType.MODEL)} className="hidden" />
-                  {contextAsset ? (
-                    <div className="absolute inset-0 w-full h-full">
-                        <img src={(bgRemovalEnabled && contextAsset.isolatedUrl) ? contextAsset.isolatedUrl : contextAsset.url} className={`w-full h-full object-contain transition-all duration-500 ${contextAsset.status === 'processing' ? 'blur-md grayscale' : ''}`} />
-                        {contextAsset.status === 'processing' && (
-                            <div className="absolute inset-0 flex items-center justify-center bg-black/20">
-                                <Loader2 className="w-8 h-8 text-white animate-spin" />
-                            </div>
-                        )}
-                        <button onClick={(e) => { e.preventDefault(); setContextAsset(null); }} className="absolute top-2 right-2 w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all z-10"><X className="w-4 h-4" /></button>
-                    </div>
-                  ) : (
-                    <>
-                        <ImageIcon className="w-7 h-7 text-purple-500" />
-                        <span className="text-[10px] font-black uppercase tracking-widest opacity-60">CONTEXT/ENV</span>
-                    </>
-                  )}
+              <div className="space-y-4">
+                <label className="relative h-44 rounded-[32px] bg-white dark:bg-[#1c1c1e] border border-black/[0.05] dark:border-white/[0.05] flex flex-col items-center justify-center gap-3 cursor-pointer hover:bg-black/[0.01] dark:hover:bg-white/[0.01] transition-all shadow-sm overflow-hidden text-center group">
+                  <input type="file" multiple onChange={(e) => e.target.files && processFiles(e.target.files, AssetType.CONTEXT)} className="hidden" aria-label="Upload Context Assets" />
+                  <div className="w-14 h-14 rounded-full bg-purple-500/10 flex items-center justify-center text-purple-500 group-hover:scale-110 transition-transform">
+                    <ImageIcon className="w-7 h-7" />
+                  </div>
+                  <span className="text-[11px] font-black text-[#8e8e93] uppercase tracking-widest">Context/Env</span>
                 </label>
+                {contextAssets.length > 0 && (
+                  <div className="grid grid-cols-3 gap-2.5 px-1">
+                    {contextAssets.map(a => (
+                      <div key={a.id} className="relative aspect-square rounded-2xl overflow-hidden bg-black/[0.02] dark:bg-white/[0.02] border border-black/[0.05] shadow-sm group">
+                        <img src={a.isolatedUrl || a.url} className="w-full h-full object-contain p-1.5" alt={a.name} />
+                        <button 
+                          onClick={() => setContextAssets(prev => prev.filter(x => x.id !== a.id))} 
+                          aria-label={`Remove ${a.name}`}
+                          className="absolute top-1.5 right-1.5 w-6 h-6 bg-black/60 text-white rounded-full flex items-center justify-center backdrop-blur-md opacity-0 group-hover:opacity-100 transition-all hover:bg-red-500"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                        {a.status === 'processing' && (
+                          <div className="absolute inset-0 bg-black/30 flex items-center justify-center backdrop-blur-[2px]">
+                            <Loader2 className="w-6 h-6 text-white animate-spin" />
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </section>
 
           {/* 02 VISION ENGINE */}
-          <section className="animate-pro-reveal" style={{ animationDelay: '0.1s' }}>
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="sidebar-section-title !mb-0">02 VISION ENGINE</h2>
-              <button onClick={handleCreativeIntelligence} disabled={allAssets.length === 0 || isGenerating} className="text-[10px] font-black text-ios-blue uppercase disabled:opacity-30 flex items-center gap-1.5 hover:brightness-110">
-                <BrainCircuit className="w-4 h-4" />
-                SMART SCAN
-              </button>
+          <section className="animate-ios-in space-y-5" style={{ animationDelay: '0.1s' }}>
+            <div className="flex items-center justify-between px-1">
+              <h2 className="text-[12px] font-black text-[#8e8e93] uppercase tracking-[0.2em]">02 Vision Engine</h2>
+              <div className="flex items-center gap-4">
+                <button 
+                  onClick={() => setIsArtDirectorMode(!isArtDirectorMode)} 
+                  aria-label="Toggle Art Director Mode (Auto-Refine)"
+                  className={`px-3 py-1 rounded-lg text-[9px] font-black tracking-widest uppercase transition-all flex items-center gap-2 ${isArtDirectorMode ? 'bg-ios-blue text-white shadow-lg' : 'bg-black/5 dark:bg-white/5 text-[#8e8e93]'}`}
+                >
+                  <Wand2 className="w-3 h-3" /> AD Mode
+                </button>
+                <button 
+                  onClick={handleSmartScan} 
+                  disabled={allAssets.length === 0 || isGenerating} 
+                  aria-label="Run Smart DNA Scan"
+                  className="text-[10px] font-black text-ios-blue disabled:opacity-30 flex items-center gap-2 hover:brightness-110 group uppercase tracking-widest transition-all"
+                >
+                  <BrainCircuit className="w-4 h-4" /> Smart Scan
+                </button>
+              </div>
             </div>
-            <div className="relative">
+
+            <div className="relative group/textarea">
               <textarea 
                 value={selectedPrompt} 
                 onChange={(e) => setSelectedPrompt(e.target.value)} 
                 disabled={isGenerating}
                 placeholder="Synthesize your visual directive..." 
-                className="w-full glass-card rounded-ios p-6 text-[14px] min-h-[140px] focus:outline-none focus:ring-1 focus:ring-ios-blue/30 ios-scrollbar disabled:opacity-50" 
+                aria-label="Visual Directive Editor"
+                className="w-full bg-white dark:bg-[#1c1c1e] border border-black/[0.05] dark:border-white/[0.05] rounded-[32px] p-7 text-[15px] min-h-[160px] focus:ring-8 focus:ring-ios-blue/5 resize-none shadow-sm placeholder:text-ios-gray/40 leading-relaxed font-medium transition-all" 
               />
-              <button 
-                onClick={handleRefinePrompt} 
-                disabled={!selectedPrompt || isGenerating} 
-                className="absolute bottom-5 right-5 w-10 h-10 bg-black/5 dark:bg-white/10 rounded-full text-ios-blue flex items-center justify-center hover:bg-ios-blue hover:text-white transition-all active:scale-90" 
-              >
-                {isRefining ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Zap className="w-5 h-5 fill-current" />}
-              </button>
+              <div className="absolute bottom-5 right-5 flex items-center gap-2">
+                <div className="px-2 py-1 rounded-md border border-dashed border-ios-blue/30 text-[9px] text-ios-blue/40 font-bold uppercase tracking-widest opacity-0 group-hover/textarea:opacity-100 transition-opacity">Manual Refinement</div>
+                <button 
+                  onClick={handleRefinePrompt} 
+                  disabled={!selectedPrompt || isGenerating} 
+                  aria-label="Manually Refine Directive"
+                  className="w-11 h-11 bg-black/5 dark:bg-white/10 text-ios-gray rounded-2xl flex items-center justify-center hover:scale-105 active:scale-95 transition-all shadow-sm disabled:opacity-30 border border-black/5 dark:border-white/5" 
+                >
+                  {isRefining ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Zap className="w-5 h-5" />}
+                </button>
+              </div>
             </div>
           </section>
 
           {/* 03 BRAND VOICE */}
-          <section className="animate-pro-reveal" style={{ animationDelay: '0.2s' }}>
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="sidebar-section-title !mb-0">03 BRAND VOICE</h2>
-              <div className="flex items-center gap-4">
-                <button onClick={() => setMarketingCopy({ headline: '', bodyCopy: '', cta: '' })} disabled={isGenerating} className="text-[10px] font-black text-red-500 uppercase flex items-center gap-1.5 hover:brightness-125 disabled:opacity-30">
-                  <Trash2 className="w-3.5 h-3.5" /> CLEAR
+          <section className="animate-ios-in space-y-5" style={{ animationDelay: '0.2s' }}>
+            <div className="flex items-center justify-between px-1">
+              <h2 className="text-[12px] font-black text-[#8e8e93] uppercase tracking-[0.2em]">03 Brand Voice</h2>
+              <div className="flex items-center gap-5">
+                <button 
+                  onClick={clearCopyOnly} 
+                  aria-label="Clear All Copy Fields"
+                  className="text-[10px] font-black text-red-500 hover:opacity-70 transition-all uppercase tracking-widest flex items-center gap-2"
+                >
+                  <Trash2 className="w-4 h-4" /> Clear
                 </button>
-                <button onClick={handleCreativeIntelligence} disabled={allAssets.length === 0 || isGenerating} className="text-[10px] font-black text-ios-blue uppercase flex items-center gap-1.5 hover:brightness-110 disabled:opacity-30">
-                  <PenTool className="w-3.5 h-3.5" /> SMART COPY
+                <button 
+                  onClick={handleSmartCopy} 
+                  disabled={allAssets.length === 0 || isGenerating} 
+                  aria-label="Generate Smart Marketing Copy"
+                  className="text-[10px] font-black text-ios-blue disabled:opacity-30 flex items-center gap-2 hover:brightness-110 group uppercase tracking-widest transition-all"
+                >
+                  <Sparkles className="w-4 h-4" /> Smart Copy
                 </button>
               </div>
             </div>
-            <div className="space-y-4">
-              <div className="glass-card rounded-ios p-4">
-                <span className="text-[9px] font-black text-ios-secondaryLabel uppercase block tracking-widest mb-1.5 flex items-center gap-1.5"><Zap className="w-3 h-3 text-ios-blue" /> VIRAL HEADLINE HOOK (ON POSTER)</span>
-                <input value={marketingCopy.headline} disabled={isGenerating} onChange={(e) => setMarketingCopy({...marketingCopy, headline: e.target.value})} placeholder="The Elite Hook..." className="w-full bg-transparent text-[14px] font-bold focus:outline-none disabled:opacity-50" />
+
+            <div className="space-y-4 group/copy-group">
+              <div className="bg-white dark:bg-[#1c1c1e] p-6 rounded-[28px] border border-black/[0.05] dark:border-white/[0.05] shadow-sm transition-all focus-within:ring-2 ring-ios-blue/10 relative overflow-hidden">
+                <div className="flex items-center justify-between mb-2.5">
+                  <span className="text-[10px] font-black text-ios-gray/50 uppercase tracking-[0.15em] flex items-center gap-2">
+                     <Zap className="w-3.5 h-3.5 text-ios-blue fill-current" /> Viral Headline Hook (on poster)
+                  </span>
+                  <button 
+                    onClick={() => setMarketingCopy({...marketingCopy, headline: ''})} 
+                    aria-label="Clear Headline Field"
+                    className="opacity-0 group-hover/copy-group:opacity-100 transition-all text-[10px] font-black text-red-500/60 uppercase tracking-widest flex items-center gap-1.5 hover:text-red-500"
+                  >
+                    <Eraser className="w-3.5 h-3.5" /> Remove
+                  </button>
+                </div>
+                <input value={marketingCopy.headline} onChange={(e) => setMarketingCopy({...marketingCopy, headline: e.target.value})} placeholder="The Elite Hook..." aria-label="Headline Input" className="w-full bg-transparent font-extrabold text-[16px] focus:outline-none placeholder:opacity-30" />
               </div>
-              <div className="glass-card rounded-ios p-4">
-                <span className="text-[9px] font-black text-ios-secondaryLabel uppercase block tracking-widest mb-1.5 flex items-center gap-1.5"><Megaphone className="w-3 h-3 text-purple-500" /> SOCIAL BODY COPY (NOT IN POSTER)</span>
-                <textarea value={marketingCopy.bodyCopy} disabled={isGenerating} onChange={(e) => setMarketingCopy({...marketingCopy, bodyCopy: e.target.value})} placeholder="Elite social media caption..." className="w-full bg-transparent text-[13px] min-h-[80px] focus:outline-none resize-none ios-scrollbar disabled:opacity-50" />
+              
+              <div className="bg-white dark:bg-[#1c1c1e] p-6 rounded-[28px] border border-black/[0.05] dark:border-white/[0.05] shadow-sm transition-all focus-within:ring-2 ring-ios-blue/10 relative">
+                <span className="text-[10px] font-black text-ios-gray/50 uppercase block mb-2.5 tracking-[0.15em] flex items-center gap-2">
+                   <Megaphone className="w-3.5 h-3.5 text-purple-500 fill-current" /> Social Body Copy (not in poster)
+                </span>
+                <textarea value={marketingCopy.body} onChange={(e) => setMarketingCopy({...marketingCopy, body: e.target.value})} placeholder="Elite social media caption..." aria-label="Social Caption Input" className="w-full bg-transparent text-[15px] focus:outline-none h-20 resize-none placeholder:opacity-30 leading-relaxed font-medium" />
               </div>
-              <div className="glass-card rounded-ios p-4">
-                <span className="text-[9px] font-black text-ios-secondaryLabel uppercase block tracking-widest mb-1.5 flex items-center gap-1.5"><RefreshCw className="w-3 h-3 text-ios-blue" /> CALL TO ACTION (ON POSTER)</span>
-                <input value={marketingCopy.cta} disabled={isGenerating} onChange={(e) => setMarketingCopy({...marketingCopy, cta: e.target.value})} placeholder="e.g., Secure Yours Now..." className="w-full bg-transparent text-[14px] font-bold text-ios-blue focus:outline-none disabled:opacity-50" />
+
+              <div className="bg-white dark:bg-[#1c1c1e] p-6 rounded-[28px] border border-black/[0.05] dark:border-white/[0.05] shadow-sm transition-all focus-within:ring-2 ring-ios-blue/10 relative">
+                <div className="flex items-center justify-between mb-2.5">
+                  <span className="text-[10px] font-black text-ios-gray/50 uppercase block tracking-[0.15em] flex items-center gap-2">
+                     <RefreshCw className="w-3.5 h-3.5 text-ios-blue" /> Call to Action (on poster)
+                  </span>
+                  <button 
+                    onClick={() => setMarketingCopy({...marketingCopy, cta: ''})} 
+                    aria-label="Clear CTA Field"
+                    className="opacity-0 group-hover/copy-group:opacity-100 transition-all text-[10px] font-black text-red-500/60 uppercase tracking-widest flex items-center gap-1.5 hover:text-red-500"
+                  >
+                    <Eraser className="w-3.5 h-3.5" /> Remove
+                  </button>
+                </div>
+                <input value={marketingCopy.cta} onChange={(e) => setMarketingCopy({...marketingCopy, cta: e.target.value})} placeholder="e.g., Secure Yours Now..." aria-label="CTA Input" className="w-full bg-transparent font-extrabold text-ios-blue text-[16px] focus:outline-none placeholder:opacity-30" />
               </div>
             </div>
           </section>
 
           {/* 04 RESOLUTION MATRIX */}
-          <section className="animate-pro-reveal" style={{ animationDelay: '0.3s' }}>
-            <h2 className="sidebar-section-title">04 RESOLUTION MATRIX</h2>
-            <div className="grid grid-cols-2 gap-3 mb-6">
-              {RATIO_OPTIONS.map((opt) => {
-                const Icon = opt.icon;
-                const isActive = aspectRatio === opt.label;
-                return (
-                  <button 
-                    key={opt.label} 
-                    onClick={() => setAspectRatio(opt.label)}
-                    disabled={isGenerating}
-                    className={`h-24 glass-card rounded-ios flex flex-col items-center justify-center gap-2 transition-all active:scale-[0.98] ${isActive ? 'ring-2 ring-ios-blue bg-ios-blue/5 shadow-[inset_0_0_15px_rgba(0,122,255,0.05)]' : 'hover:bg-white/80 dark:hover:bg-white/10'}`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <Icon className={`w-5 h-5 ${isActive ? 'text-ios-blue' : 'text-ios-secondaryLabel opacity-60'}`} />
-                      <span className={`text-[12px] font-bold ${isActive ? 'text-ios-blue' : 'text-ios-label'}`}>{opt.label.split(' (')[0]}</span>
-                    </div>
-                    <span className="text-[10px] font-black text-ios-titanium opacity-60 uppercase tracking-widest">
-                      {opt.label === 'Custom' ? `${customWidth}X${customHeight}` : opt.sub}
-                    </span>
-                  </button>
-                );
-              })}
+          <section className="animate-ios-in px-1" style={{ animationDelay: '0.3s' }}>
+            <div className="flex items-center justify-between mb-5">
+              <h2 className="text-[12px] font-black text-[#8e8e93] uppercase tracking-[0.2em]">04 Resolution Matrix</h2>
+              <button 
+                onClick={() => setIsHighRes(!isHighRes)} 
+                aria-label="Toggle 4K High Resolution Output"
+                className={`px-4 py-1.5 rounded-full text-[10px] font-bold transition-all flex items-center gap-2.5 ${isHighRes ? 'bg-orange-500 text-white shadow-lg' : 'bg-black/5 dark:bg-white/5 text-[#8e8e93]'}`}
+              >
+                <Cpu className="w-4 h-4" /> {isHighRes ? '4K Ultra' : '1K Standard'}
+              </button>
+            </div>
+            
+            <div className="grid grid-cols-2 gap-4 mb-8">
+              {RATIO_OPTIONS.map((opt) => (
+                <button 
+                  key={opt.label} 
+                  onClick={() => setAspectRatio(opt.label)}
+                  aria-label={`Select aspect ratio: ${opt.label}`}
+                  className={`p-5 rounded-[24px] border flex flex-col items-center gap-2 transition-all ${aspectRatio === opt.label ? 'border-ios-blue bg-ios-blue/5 text-ios-blue ring-4 ring-ios-blue/5 shadow-md scale-[1.03]' : 'border-black/[0.03] dark:border-white/[0.05] bg-white dark:bg-[#1c1c1e] hover:bg-black/[0.01]'}`}
+                >
+                  <opt.icon className="w-5 h-5" />
+                  <span className="text-[12px] font-extrabold text-center leading-tight">{opt.label.split(' (')[0]}</span>
+                  <span className="text-[10px] opacity-40 uppercase font-black tracking-widest">{opt.sub}</span>
+                </button>
+              ))}
             </div>
 
-            {aspectRatio === 'Custom' && (
-              <div className="glass-card rounded-ios p-5 animate-pro-reveal space-y-4">
-                <div className="grid grid-cols-2 gap-6 items-end">
-                  <div>
-                    <span className="text-[9px] font-black text-ios-secondaryLabel uppercase block tracking-widest mb-2">WIDTH (PX)</span>
-                    <input 
-                      type="number" 
-                      value={customWidth} 
-                      onChange={(e) => setCustomWidth(Number(e.target.value))}
-                      className="w-full bg-transparent text-[16px] font-bold focus:outline-none border-b border-ios-blue/30 focus:border-ios-blue pb-1"
-                    />
-                  </div>
-                  <div className="flex items-center gap-4">
-                    <span className="text-ios-secondaryLabel opacity-60">×</span>
-                    <div className="flex-1">
-                      <span className="text-[9px] font-black text-ios-secondaryLabel uppercase block tracking-widest mb-2">HEIGHT (PX)</span>
-                      <input 
-                        type="number" 
-                        value={customHeight} 
-                        onChange={(e) => setCustomHeight(Number(e.target.value))}
-                        className="w-full bg-transparent text-[16px] font-bold focus:outline-none border-b border-ios-blue/30 focus:border-ios-blue pb-1"
-                      />
-                    </div>
-                  </div>
+            {aspectRatio === 'Custom Size' && (
+              <div className="flex gap-5 p-6 bg-white dark:bg-[#1c1c1e] rounded-[32px] border border-black/[0.05] dark:border-white/[0.05] animate-ios-in shadow-inner mb-8">
+                <div className="flex-1">
+                  <label className="text-[10px] font-black text-ios-gray/50 uppercase block mb-2 tracking-widest">Width</label>
+                  <input type="number" aria-label="Custom width in pixels" value={customWidth} onChange={(e) => setCustomWidth(parseInt(e.target.value))} className="w-full bg-transparent font-extrabold text-[16px] focus:outline-none border-b border-black/[0.05] focus:border-ios-blue pb-1.5" />
+                </div>
+                <div className="flex items-center text-ios-gray/40 font-black mt-5">×</div>
+                <div className="flex-1">
+                  <label className="text-[10px] font-black text-ios-gray/50 uppercase block mb-2 tracking-widest">Height</label>
+                  <input type="number" aria-label="Custom height in pixels" value={customHeight} onChange={(e) => setCustomHeight(parseInt(e.target.value))} className="w-full bg-transparent font-extrabold text-[16px] focus:outline-none border-b border-black/[0.05] focus:border-ios-blue pb-1.5" />
                 </div>
               </div>
             )}
           </section>
 
-          <div className="pb-12">
+          <div className="mt-6 pb-24 px-1">
             <button 
               onClick={handleGeneratePoster} 
               disabled={isGenerating || allAssets.length === 0 || !selectedPrompt} 
-              className="w-full h-14 ios-btn-primary rounded-full text-[15px] font-black flex items-center justify-center gap-3 active:scale-95 shadow-xl disabled:opacity-30"
+              aria-label="Trigger Final Masterpiece Generation"
+              className="w-full h-16 bg-gradient-to-r from-ios-blue to-[#005aff] text-white rounded-[32px] text-[17px] font-extrabold flex items-center justify-center gap-4 active:scale-95 shadow-2xl shadow-ios-blue/40 hover:brightness-110 transition-all disabled:opacity-20 relative overflow-hidden"
             >
-              {isGeneratingPoster ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Zap className="w-5 h-5 fill-white" />}
+              {isGeneratingPoster ? <Loader2 className="w-6 h-6 animate-spin" /> : <Zap className="w-6 h-6 fill-white" />}
               Generate Masterpiece
             </button>
           </div>
         </aside>
 
-        {/* MAIN PREVIEW AREA */}
-        <main className="flex-1 h-full flex flex-col items-center justify-center p-8 lg:p-12 overflow-hidden relative bg-[#f2f2f7] dark:bg-[#1c1c1e]">
-          <div className="absolute top-6 left-1/2 -translate-x-1/2 z-[300]">
-            <button 
-               onClick={() => setFinalImage(null)}
-               className="w-12 h-12 bg-black/60 backdrop-blur-md rounded-full text-white flex items-center justify-center hover:scale-110 active:scale-95 transition-all"
-            >
-              <X className="w-7 h-7" />
-            </button>
-          </div>
-
-          <div className="absolute right-6 top-1/2 -translate-y-1/2 z-[300] hidden lg:block">
-            <button className="w-10 h-10 bg-black/80 rounded-full flex items-center justify-center text-white shadow-lg">
-              <Menu className="w-6 h-6" />
-            </button>
-          </div>
-
-          <div className={`relative rounded-[44px] overflow-hidden bg-white dark:bg-black/40 flex items-center justify-center w-full max-w-4xl h-full shadow-[0_40px_100px_-20px_rgba(0,0,0,0.1)] transition-all duration-700 ${isGeneratingPoster ? 'opacity-0 scale-95 blur-xl' : 'opacity-100 scale-100'} p-8 border border-white dark:border-white/5`}>
+        {/* MAIN PREVIEW STAGE */}
+        <main className="flex-1 h-full flex flex-col items-center justify-center p-10 lg:p-20 overflow-hidden relative bg-[#f2f2f7] dark:bg-[#0a0a0a]">
+          <div className={`relative rounded-[64px] overflow-hidden bg-white dark:bg-black/20 flex items-center justify-center w-full max-w-7xl h-full shadow-[0_48px_120px_-24px_rgba(0,0,0,0.15)] transition-all duration-1000 ${isGeneratingPoster ? 'opacity-0 scale-90 blur-3xl' : 'opacity-100 scale-100'} p-16 border border-white/40 dark:border-white/5`}>
             {finalImage ? (
-              <div className="w-full h-full group relative rounded-[32px] overflow-hidden">
-                <img src={finalImage} className="w-full h-full object-contain" />
-                <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition-all flex items-center justify-center gap-6 backdrop-blur-md">
-                  <button onClick={() => handleDownloadImage(finalImage)} className="w-16 h-16 bg-white rounded-full flex items-center justify-center text-ios-blue shadow-2xl active:scale-90 hover:scale-110 transition-all"><Download className="w-8 h-8" /></button>
-                  <button onClick={() => setActiveTab('studio')} className="w-16 h-16 bg-ios-blue rounded-full flex items-center justify-center text-white shadow-2xl active:scale-90 hover:scale-110 transition-all"><Edit3 className="w-8 h-8" /></button>
+              <div className="w-full h-full group relative rounded-[40px] overflow-hidden shadow-2xl">
+                <img src={finalImage} className="w-full h-full object-contain" alt="Final Generated Ad Creative" />
+                <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-all flex items-center justify-center gap-12 backdrop-blur-3xl">
+                  <button 
+                    onClick={() => handleDownloadImage(finalImage)} 
+                    aria-label="Download High-Res Masterpiece"
+                    className="w-20 h-20 bg-white rounded-full flex items-center justify-center text-ios-blue shadow-2xl transform active:scale-90 hover:scale-110 transition-all"
+                  >
+                    <Download className="w-10 h-10" />
+                  </button>
+                  <button 
+                    onClick={() => { setActiveTab('studio'); setFinalImage(null); }} 
+                    aria-label="Return to Studio Editor"
+                    className="w-20 h-20 bg-ios-blue rounded-full flex items-center justify-center text-white shadow-2xl transform active:scale-90 hover:scale-110 transition-all"
+                  >
+                    <Edit3 className="w-10 h-10" />
+                  </button>
                 </div>
               </div>
             ) : (
-              <div className="text-center opacity-20 flex flex-col items-center gap-6">
-                <div className="w-20 h-20 text-ios-blue/40"><Monitor className="w-full h-full" /></div>
-                <div>
-                   <p className="text-[28px] font-black uppercase tracking-[0.4em] titanium-text mb-2">NEURAL OUTPUT STAGE</p>
-                   <p className="text-[12px] font-bold uppercase tracking-widest text-ios-secondaryLabel">
-                     {aspectRatio === 'Custom' ? `${customWidth}X${customHeight}` : aspectRatio.toUpperCase()}
+              <div className="text-center opacity-[0.05] dark:opacity-[0.1] flex flex-col items-center gap-10 pointer-events-none select-none">
+                <Monitor className="w-64 h-64 text-ios-blue" />
+                <div className="space-y-4">
+                   <p className="text-[54px] font-black uppercase tracking-[0.5em] leading-none">Neural Output Stage</p>
+                   <p className="text-[18px] font-bold uppercase tracking-[0.3em] text-ios-gray">
+                     {aspectRatio === 'Custom Size' ? `${customWidth}X${customHeight}` : aspectRatio.toUpperCase()}
                    </p>
                 </div>
               </div>
@@ -524,68 +637,115 @@ const App: React.FC = () => {
           </div>
 
           {isGeneratingPoster && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-10 z-[1000] bg-[#f2f2f7]/60 dark:bg-[#1c1c1e]/60 backdrop-blur-2xl animate-pro-reveal text-center">
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-14 z-[1000] bg-[#f2f2f7]/85 dark:bg-[#0a0a0a]/85 backdrop-blur-3xl animate-ios-in text-center">
               <div className="relative">
-                <div className="w-36 h-36 border-[12px] border-ios-blue/10 border-t-ios-blue rounded-full animate-spin"></div>
-                <Sparkles className="absolute inset-0 m-auto w-12 h-12 text-ios-blue animate-pulse" />
+                <div className="w-56 h-56 border-[16px] border-ios-blue/10 border-t-ios-blue rounded-full animate-spin shadow-2xl"></div>
+                <Sparkles className="absolute inset-0 m-auto w-20 h-20 text-ios-blue animate-pulse" />
               </div>
-              <div className="space-y-3">
-                <p className="text-[24px] font-black tracking-tighter titanium-text uppercase">Synthesizing Creative</p>
-                <p className="text-[13px] font-bold text-ios-secondaryLabel uppercase tracking-[0.2em]">{LOADING_MESSAGES[loadingStep]}</p>
+              <div className="space-y-5">
+                <p className="text-[38px] font-black tracking-tighter uppercase text-[#1d1d1f] dark:text-white">Synthesizing Creative</p>
+                <p className="text-[18px] font-extrabold text-ios-gray uppercase tracking-[0.5em]">{LOADING_MESSAGES[loadingStep]}</p>
               </div>
             </div>
           )}
         </main>
       </div>
 
-      {/* MOBILE ONLY NAVIGATION - Hide on lg screens to prevent button obstruction */}
-      <nav className="h-20 glass-nav flex items-center justify-around fixed bottom-0 w-full z-[400] border-t border-black/[0.05] dark:border-white/[0.05] lg:hidden">
+      {/* MOBILE TAB NAV */}
+      <nav className="h-24 glass-effect flex items-center justify-around fixed bottom-0 w-full z-[400] lg:hidden border-t border-black/[0.05] pb-6">
         <button 
           onClick={() => setActiveTab('studio')} 
-          className={`flex flex-col items-center gap-1.5 transition-all w-24 ${activeTab === 'studio' ? 'text-ios-blue scale-110' : 'text-ios-secondaryLabel opacity-40 hover:opacity-100'}`}
+          aria-label="Switch to Studio View"
+          className={`flex flex-col items-center gap-2 transition-all ${activeTab === 'studio' ? 'text-ios-blue scale-110' : 'text-ios-gray opacity-40'}`}
         >
           <Layers className="w-7 h-7" />
-          <span className="text-[10px] font-black uppercase tracking-widest">STUDIO</span>
+          <span className="text-[11px] font-black uppercase tracking-widest">Studio</span>
         </button>
         <button 
           onClick={() => setActiveTab('preview')} 
-          className={`flex flex-col items-center gap-1.5 transition-all w-24 ${activeTab === 'preview' ? 'text-ios-blue scale-110' : 'text-ios-secondaryLabel opacity-40 hover:opacity-100'}`}
+          aria-label="Switch to Preview View"
+          className={`flex flex-col items-center gap-2 transition-all ${activeTab === 'preview' ? 'text-ios-blue scale-110' : 'text-ios-gray opacity-40'}`}
         >
           <Monitor className="w-7 h-7" />
-          <span className="text-[10px] font-black uppercase tracking-widest">PREVIEW</span>
+          <span className="text-[11px] font-black uppercase tracking-widest">Preview</span>
         </button>
       </nav>
 
+      {/* ERROR MODAL */}
       {error && (
-        <div className="fixed inset-0 z-[1000] flex items-center justify-center p-6 bg-black/40 backdrop-blur-md">
-          <div className="w-full max-w-sm glass-card rounded-[32px] p-10 text-center animate-pro-reveal border border-white/20 shadow-2xl">
-            <div className="w-16 h-16 bg-red-500/10 rounded-full flex items-center justify-center mb-6 mx-auto"><AlertCircle className="w-8 h-8 text-red-500" /></div>
-            <h3 className="text-[20px] font-black mb-2">Studio System Alert</h3>
-            <p className="text-[13px] text-ios-secondaryLabel font-bold mb-8">{error}</p>
-            <button onClick={() => setError(null)} className="w-full h-12 bg-ios-blue text-white rounded-full font-black active:scale-95 shadow-lg">Acknowledged</button>
+        <div className="fixed inset-0 z-[1100] flex items-center justify-center p-8 bg-black/70 backdrop-blur-3xl">
+          <div className="w-full max-w-[400px] bg-white dark:bg-[#1c1c1e] rounded-[48px] p-14 text-center shadow-[0_64px_120px_rgba(0,0,0,0.5)] animate-ios-in border border-black/[0.05]">
+            <div className={`w-24 h-24 ${error.type === 'quota' ? 'bg-ios-blue/10' : 'bg-red-500/10'} rounded-full flex items-center justify-center mb-10 mx-auto`}>
+              {error.type === 'quota' ? <ShieldAlert className="w-12 h-12 text-ios-blue" /> : <AlertCircle className="w-12 h-12 text-red-500" />}
+            </div>
+            <h3 className="text-[28px] font-black mb-5 tracking-tight">{error.type === 'quota' ? 'System Capacity' : 'Studio Alert'}</h3>
+            <p className="text-[17px] text-ios-gray leading-relaxed mb-12">{error.message}</p>
+            <button 
+              onClick={() => setError(null)} 
+              aria-label="Close Error Modal Overlay"
+              className="w-full h-16 bg-ios-blue text-white rounded-[32px] font-extrabold transform active:scale-95 shadow-xl shadow-ios-blue/30 transition-all hover:brightness-110"
+            >
+              Acknowledged
+            </button>
           </div>
         </div>
       )}
 
+      {/* ARCHIVE DRAWER */}
       {showHistory && (
         <div className="fixed inset-0 z-[500] flex">
-          <div className="absolute inset-0 bg-black/30 backdrop-blur-lg transition-all" onClick={() => setShowHistory(false)} />
-          <aside className="relative ml-auto w-full sm:w-[460px] h-full glass-nav shadow-2xl flex flex-col p-8 lg:p-10 animate-pro-reveal border-l border-white/10">
-            <div className="flex items-center justify-between mb-10">
-              <h2 className="text-[28px] font-extrabold tracking-tighter titanium-text uppercase">Studio Archives</h2>
-              <button onClick={() => setShowHistory(false)} className="w-10 h-10 flex items-center justify-center bg-black/5 dark:bg-white/10 rounded-full text-ios-secondaryLabel hover:text-red-500"><X className="w-6 h-6" /></button>
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-2xl transition-all" onClick={() => setShowHistory(false)} aria-label="Close History Overlay" />
+          <aside className="relative ml-auto w-full max-w-2xl h-full bg-[#f5f5f7] dark:bg-[#080808] shadow-[0_0_150px_rgba(0,0,0,0.7)] flex flex-col p-14 animate-ios-in border-l border-white/5">
+            <div className="flex items-center justify-between mb-14">
+              <h2 className="text-[36px] font-black tracking-tighter uppercase titanium-text">Creative Archive</h2>
+              <button 
+                onClick={() => setShowHistory(false)} 
+                aria-label="Close History Archive Drawer"
+                className="w-14 h-14 flex items-center justify-center bg-black/5 dark:bg-white/10 rounded-full transform active:scale-90 transition-all hover:bg-red-500/10 hover:text-red-500"
+              >
+                <X className="w-7 h-7" />
+              </button>
             </div>
-            <div className="flex-1 overflow-y-auto space-y-6 ios-scrollbar pr-2">
-              {history.map(item => (
-                <div key={item.id} className="rounded-ios overflow-hidden glass-card border border-white/10 group relative shadow-md">
-                  <img src={item.imageUrl} className="w-full aspect-video object-cover cursor-pointer hover:scale-105 transition-all duration-700" onClick={() => { setFinalImage(item.imageUrl); setShowHistory(false); setActiveTab('preview'); }} />
-                  <div className="p-5">
-                    <p className="text-[11px] font-black uppercase tracking-widest truncate mb-1.5">{item.prompt}</p>
-                    <p className="text-[9px] text-ios-titanium font-black uppercase flex items-center gap-1.5"><Clock className="w-3.5 h-3.5" /> {new Date(item.timestamp).toLocaleString()}</p>
-                  </div>
-                  <button onClick={() => handleDownloadImage(item.imageUrl)} className="absolute top-4 right-4 w-10 h-10 bg-white/90 rounded-full flex items-center justify-center text-ios-blue shadow-xl opacity-0 group-hover:opacity-100 transition-all"><Download className="w-5 h-5" /></button>
+            <div className="flex-1 overflow-y-auto space-y-12 custom-scrollbar pr-6">
+              {history.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center opacity-20 gap-8">
+                   <History className="w-20 h-20" />
+                   <p className="text-xl font-bold uppercase tracking-widest text-center leading-loose">No Masters Recorded Yet</p>
                 </div>
-              ))}
+              ) : (
+                history.map(item => (
+                  <div key={item.id} className="rounded-[48px] overflow-hidden bg-white dark:bg-[#1c1c1e] border border-black/5 group relative shadow-2xl transform hover:-translate-y-3 transition-all duration-1000">
+                    <img 
+                      src={item.imageUrl} 
+                      className="w-full aspect-video object-cover cursor-pointer hover:scale-105 transition-all duration-1000" 
+                      alt="Archived Creative Poster"
+                      onClick={() => { setFinalImage(item.imageUrl); setShowHistory(false); setActiveTab('preview'); }} 
+                    />
+                    <div className="p-10">
+                      <p className="text-[16px] font-extrabold line-clamp-2 mb-6 leading-relaxed">{item.prompt}</p>
+                      <div className="flex items-center justify-between">
+                        <p className="text-[12px] text-ios-gray font-black uppercase flex items-center gap-2 tracking-[0.05em]"><Clock className="w-5 h-5" /> {new Date(item.timestamp).toLocaleDateString()}</p>
+                        <div className="flex gap-3">
+                          <button 
+                            onClick={() => handleDownloadImage(item.imageUrl)} 
+                            aria-label="Download archived creative"
+                            className="w-12 h-12 bg-ios-blue/10 text-ios-blue rounded-full flex items-center justify-center hover:bg-ios-blue hover:text-white transition-all"
+                          >
+                            <Download className="w-5 h-5" />
+                          </button>
+                          <button 
+                            onClick={() => { setFinalImage(item.imageUrl); setShowHistory(false); setActiveTab('preview'); }} 
+                            aria-label="Restore archived creative to stage"
+                            className="w-12 h-12 bg-black/5 dark:bg-white/10 text-ios-gray rounded-full flex items-center justify-center hover:bg-ios-blue hover:text-white transition-all"
+                          >
+                            <Undo2 className="w-5 h-5" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
           </aside>
         </div>

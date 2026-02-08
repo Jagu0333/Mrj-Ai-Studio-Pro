@@ -1,9 +1,8 @@
+
 export enum AssetType {
   PRODUCT = 'product',
-  MODEL = 'model'
+  CONTEXT = 'context'
 }
-
-export type ProcessingStatus = 'pending' | 'processing' | 'completed' | 'failed';
 
 export interface Asset {
   id: string;
@@ -14,8 +13,7 @@ export interface Asset {
   type: AssetType;
   name: string;
   mimeType: string;
-  status?: ProcessingStatus;
-  error?: string;
+  status: 'pending' | 'processing' | 'completed' | 'failed';
 }
 
 export interface AnalysisResult {
@@ -27,16 +25,9 @@ export interface AnalysisResult {
   suggestedPrompt: string;
 }
 
-export interface CreativePrompt {
-  id: string;
-  title: string;
-  description: string;
-  vibe: 'luxury' | 'emotional' | 'bold' | 'cinematic' | 'minimal';
-}
-
 export interface MarketingCopy {
   headline: string;
-  bodyCopy: string;
+  body: string;
   cta: string;
 }
 
@@ -44,11 +35,11 @@ export type AspectRatio =
   | 'Instagram Square (1:1)' 
   | 'Instagram Portrait (4:5)' 
   | 'Instagram Story (9:16)' 
-  | 'Facebook Feed (16:9)' 
-  | 'Facebook Cover (16:9)'
+  | 'Facebook Feed (16:9)'
+  | 'Facebook Cover (16:9)' 
   | 'YouTube Thumbnail (16:9)'
   | 'LinkedIn Feed (4:5)'
-  | 'Custom';
+  | 'Custom Size';
 
 export interface HistoryItem {
   id: string;
@@ -56,7 +47,7 @@ export interface HistoryItem {
   prompt: string;
   copy: MarketingCopy | null;
   ratio: AspectRatio;
-  customWidth?: number;
-  customHeight?: number;
+  width?: number;
+  height?: number;
   timestamp: number;
 }

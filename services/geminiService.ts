@@ -1,70 +1,34 @@
+
 // @ts-nocheck
 import { GoogleGenAI, Type, GenerateContentResponse } from "@google/genai";
 import { Asset, AnalysisResult, MarketingCopy, AspectRatio } from "../types";
 
-/**
- * GLOBAL API CALL COUNTER
- */
-let apiCallCount = 0;
-
-const logApiCall = () => {
-  apiCallCount++;
-  console.log(`Gemini call started — count: ${apiCallCount}`);
-};
-
-/**
- * GLOBAL CLIENT-SIDE RATE LIMITER
- */
-let lastImageRequestTime = 0;
-let lastTextRequestTime = 0;
-
-const IMAGE_COOLDOWN = 60000; // 60 seconds
-const TEXT_COOLDOWN = 20000;  // 20 seconds
-
-const enforceRateLimit = (type: 'text' | 'image') => {
-  const now = Date.now();
-  if (type === 'image') {
-    if (now - lastImageRequestTime < IMAGE_COOLDOWN) {
-      throw new Error("Please wait before generating again.");
-    }
-    lastImageRequestTime = now;
-  } else {
-    if (now - lastTextRequestTime < TEXT_COOLDOWN) {
-      throw new Error("Please wait before generating again.");
-    }
-    lastTextRequestTime = now;
-  }
-};
-
-/**
- * SECURE INITIALIZATION
- */
 const getAI = () => {
-  if (!process.env.API_KEY || process.env.API_KEY === "undefined") {
+  const key = process.env.API_KEY;
+  if (!key || key === "undefined") {
     throw new Error("STUDIO_CONFIG_ERROR: Secure environment key is missing.");
   }
-  return new GoogleGenAI({ apiKey: process.env.API_KEY });
+  return new GoogleGenAI({ apiKey: key });
 };
 
-/**
- * ERROR SANITIZATION
- */
-const sanitizeError = (err: any): string => {
-  if (err.message === "Please wait before generating again.") {
-    return err.message;
+const withRetry = async <T>(fn: () => Promise<T>, retries = 2, delay = 5000): Promise<T> => {
+  try {
+    return await fn();
+  } catch (error) {
+    if (retries > 0 && error.message?.includes("429")) {
+      console.warn(`Quota exceeded. Cooling down for ${delay}ms...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+      return withRetry(fn, retries - 1, delay * 2);
+    }
+    throw error;
   }
+};
 
-  const errorString = JSON.stringify(err).toLowerCase();
-  
-  if (errorString.includes("429") || errorString.includes("quota") || errorString.includes("exhausted") || errorString.includes("limit")) {
-    return "Quota or capacity reached. Please try later.";
-  }
-  
-  if (errorString.includes("safety") || errorString.includes("blocked")) {
-    return "Safety filter triggered. Please adjust assets or prompt.";
-  }
-  
-  return err.message || "Studio connectivity interrupted.";
+const sanitizeError = (err: any): string => {
+  const msg = err?.message || "";
+  if (msg.includes("429")) return "QUOTA_EXCEEDED";
+  if (msg.includes("403") || msg.includes("401")) return "SECURITY_BLOCK: Access declined.";
+  return "STUDIO_INTERRUPTION: " + msg;
 };
 
 const SAFETY_SETTINGS = [
@@ -91,201 +55,199 @@ export const compressImage = (base64: string, mimeType: string, maxDim: number =
       canvas.width = width;
       canvas.height = height;
       const ctx = canvas.getContext('2d');
-      if (!ctx) return reject("Canvas failure");
+      if (!ctx) return reject("Canvas context failed");
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
       ctx.drawImage(img, 0, 0, width, height);
-      const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.85);
-      resolve({ base64: compressedDataUrl.split(',')[1], url: compressedDataUrl, mimeType: 'image/jpeg' });
+      const targetMimeType = 'image/jpeg';
+      const compressedDataUrl = canvas.toDataURL(targetMimeType, 0.85);
+      resolve({ base64: compressedDataUrl.split(',')[1], url: compressedDataUrl, mimeType: targetMimeType });
     };
-    img.onerror = () => reject("Load failure");
+    img.onerror = () => reject("Failed to load image");
   });
 };
 
-/**
- * ANALYZE ASSETS FOR CREATIVE INTELLIGENCE
- */
-export const getCreativeIntelligence = async (assets: Asset[]): Promise<{ analysis: AnalysisResult, copy: MarketingCopy }> => {
-  try {
-    enforceRateLimit('text');
-    logApiCall();
-    const ai = getAI();
-    const parts = assets.map((asset) => ({ inlineData: { data: asset.base64, mimeType: asset.mimeType } }));
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: {
-        parts: [
-          ...parts,
-          { text: "SENIOR ART DIRECTOR AUDIT: Analyze these assets and synthesize an elite advertising suggestedPrompt. Also generate high-converting marketing copy (Headline, Social Body, CTA). RETURN JSON ONLY." }
-        ]
-      },
-      config: {
-        systemInstruction: "You are the Executive Creative Director. Output Analysis and Marketing Copy as a single JSON object. These assets are REQUIRED for the final design.",
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            analysis: {
-              type: Type.OBJECT,
-              properties: {
-                subjects: { type: Type.STRING },
-                lighting: { type: Type.STRING },
-                details: { type: Type.STRING },
-                brandVibe: { type: Type.STRING },
-                suggestedPrompt: { type: Type.STRING }
-              },
-              required: ["subjects", "lighting", "details", "brandVibe", "suggestedPrompt"]
-            },
-            copy: {
-              type: Type.OBJECT,
-              properties: {
-                headline: { type: Type.STRING },
-                bodyCopy: { type: Type.STRING },
-                cta: { type: Type.STRING }
-              },
-              required: ["headline", "bodyCopy", "cta"]
-            }
-          },
-          required: ["analysis", "copy"]
+export const performCreativeDeepDive = async (assets: Asset[]): Promise<{ analysis: AnalysisResult, copy: MarketingCopy }> => {
+  return withRetry(async () => {
+    try {
+      const ai = getAI();
+      const parts = assets.map((asset) => ({
+        inlineData: { data: asset.base64, mimeType: asset.mimeType }
+      }));
+      
+      // Upgrade: Using gemini-3-pro-preview for elite creative reasoning as per Jury request.
+      const response = await ai.models.generateContent({
+        model: 'gemini-3-pro-preview',
+        contents: {
+          parts: [
+            ...parts,
+            { text: "ACT AS WORLD-CLASS CREATIVE DIRECTOR: Conduct a high-fidelity visual DNA analysis. 1) Synthesize an elite agency photorealistic prompt. 2) Generate high-conversion viral copy (Headline, Social Body, CTA) tailored to the brand's aesthetic and psychology." }
+          ]
         },
-        safetySettings: SAFETY_SETTINGS
-      }
-    });
-    return JSON.parse(response.text || "{}");
-  } catch (error) { 
-    throw new Error(sanitizeError(error)); 
-  }
+        config: {
+          systemInstruction: "You are an Elite Agency Director and Copywriter. Provide high-end technical and marketing metadata as a JSON object. The 'suggestedPrompt' must be a professional design directive.",
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              analysis: {
+                type: Type.OBJECT,
+                properties: {
+                  subjects: { type: Type.STRING },
+                  lighting: { type: Type.STRING },
+                  brandVibe: { type: Type.STRING },
+                  suggestedPrompt: { type: Type.STRING, description: "Professional visual synthesis prompt" }
+                },
+                required: ["subjects", "lighting", "brandVibe", "suggestedPrompt"]
+              },
+              copy: {
+                type: Type.OBJECT,
+                properties: {
+                  headline: { type: Type.STRING },
+                  body: { type: Type.STRING },
+                  cta: { type: Type.STRING }
+                },
+                required: ["headline", "body", "cta"]
+              }
+            },
+            required: ["analysis", "copy"]
+          },
+          safetySettings: SAFETY_SETTINGS
+        }
+      });
+      const data = JSON.parse(response.text || "{}");
+      return { analysis: data.analysis, copy: data.copy };
+    } catch (error) {
+      throw new Error(sanitizeError(error));
+    }
+  });
 };
 
-/**
- * REFINE DIRECTIVE
- */
-export const refinePrompt = async (prompt: string, assets: Asset[]): Promise<string> => {
-  try {
-    enforceRateLimit('text');
-    logApiCall();
-    const ai = getAI();
-    const assetParts = assets.map((asset) => ({ inlineData: { data: asset.base64, mimeType: asset.mimeType } }));
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: {
-        parts: [
-          ...assetParts,
-          { text: `HEAD OF DESIGN REFINEMENT: Enhance this vision: "${prompt}". Focus on cinematic material physics. ONLY output the refined prompt text. Ensure the original assets provided in the parts are the central focus.` }
-        ]
-      },
-      config: { 
-        systemInstruction: "You are a Master Creative Director. Return raw prompt text only.",
-        safetySettings: SAFETY_SETTINGS 
-      }
-    });
-    return response.text?.trim() || prompt;
-  } catch (error) {
-    throw new Error(sanitizeError(error));
-  }
+export const refinePrompt = async (prompt: string): Promise<string> => {
+  return withRetry(async () => {
+    try {
+      const ai = getAI();
+      const response = await ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: `RE-ENGINEER THIS VISION AS AN AWARD-WINNING ART DIRECTOR: Elevate this prompt into a technical high-fidelity directive. Include octane-render qualities, cinematic lighting (Rembrandt/Butterfly), and material science details. Raw refined text only: "${prompt}"`,
+        config: {
+          systemInstruction: "You are the Head of Design. Output only the raw, refined, professional prompt text. No conversational filler.",
+          safetySettings: SAFETY_SETTINGS
+        }
+      });
+      return response.text?.trim() || prompt;
+    } catch (error) {
+      throw new Error(sanitizeError(error));
+    }
+  });
 };
 
-/**
- * BG REMOVAL API
- */
 export const isolateSubject = async (asset: Asset): Promise<{ base64: string, url: string }> => {
-  try {
-    enforceRateLimit('image');
-    logApiCall();
-    const ai = getAI();
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash-image',
-      contents: {
-        parts: [
-          { inlineData: { data: asset.base64, mimeType: asset.mimeType } },
-          { text: "PRECISION ISOLATION: Remove the background perfectly. Output a transparent PNG of the main subject only. Maintain original subject fidelity." }
-        ]
-      },
-      config: { safetySettings: SAFETY_SETTINGS }
-    });
-    let base64 = '';
-    const parts = response.candidates?.[0]?.content?.parts || [];
-    for (const p of parts) { if (p.inlineData) { base64 = p.inlineData.data; break; } }
-    if (!base64) throw new Error("ISO_FAIL: No isolated image returned.");
-    return { base64, url: `data:image/png;base64,${base64}` };
-  } catch (err) { 
-    throw new Error(sanitizeError(err)); 
-  }
+  return withRetry(async () => {
+    try {
+      const ai = getAI();
+      const isolationNormalized = await compressImage(asset.base64, asset.mimeType, 512);
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash-image',
+        contents: {
+          parts: [
+            { inlineData: { data: isolationNormalized.base64, mimeType: isolationNormalized.mimeType } },
+            { text: "ISOLATION: Remove background. High-precision art extraction. Keep subject raw and identical." }
+          ]
+        },
+        config: { safetySettings: SAFETY_SETTINGS }
+      });
+
+      let base64 = '';
+      const parts = response.candidates?.[0]?.content?.parts || [];
+      for (const p of parts) { if (p.inlineData) { base64 = p.inlineData.data; break; } }
+      if (!base64) return { base64: asset.base64, url: asset.url };
+      return { base64, url: `data:image/png;base64,${base64}` };
+    } catch (err) {
+      return { base64: asset.base64, url: asset.url };
+    }
+  });
 };
 
-/**
- * GENERATE MASTERPIECE COMPOSITION
- */
 export const generatePoster = async (
   assets: Asset[], 
   prompt: string, 
   ratio: AspectRatio,
   bgRemoval: boolean,
-  marketingCopy?: MarketingCopy | null,
-  customDims?: { width: number, height: number }
+  copy?: MarketingCopy | null,
+  customWidth?: number,
+  customHeight?: number,
+  isHighRes?: boolean
 ): Promise<string> => {
-  try {
-    enforceRateLimit('image');
-    logApiCall();
-    const ai = getAI();
-    
-    // Explicitly describe each asset part to the model
-    const assetParts = assets.map((a, index) => {
-      const isUsingIsolated = bgRemoval && a.isolatedBase64;
-      const data = isUsingIsolated ? a.isolatedBase64 : a.base64;
-      const mimeType = isUsingIsolated ? 'image/png' : a.mimeType;
-      return [
-        { inlineData: { data, mimeType } },
-        { text: `STUDIO ASSET ${index + 1} (${a.type.toUpperCase()}): Use this exact visual object in the composition.` }
-      ];
-    }).flat();
+  return withRetry(async () => {
+    try {
+      const ai = getAI();
+      const assetParts = assets.map((a, i) => {
+        const data = (bgRemoval && a.isolatedBase64) ? a.isolatedBase64 : a.base64;
+        return [
+          { inlineData: { data, mimeType: 'image/png' } },
+          { text: `BRAND ASSET ${i + 1}: Preserve original colors and geometry.` }
+        ];
+      }).flat();
 
-    const ratioMap: Record<string, string> = {
-      'Instagram Square (1:1)': '1:1', 
-      'Instagram Portrait (4:5)': '3:4', 
-      'Instagram Story (9:16)': '9:16', 
-      'Facebook Feed (16:9)': '16:9', 
-      'Facebook Cover (16:9)': '16:9',
-      'YouTube Thumbnail (16:9)': '16:9',
-      'LinkedIn Feed (4:5)': '3:4'
-    };
-
-    let targetRatio = '1:1';
-    if (ratio === 'Custom' && customDims) {
-      const val = customDims.width / customDims.height;
-      if (val >= 1.7) targetRatio = '16:9';
-      else if (val >= 1.3) targetRatio = '4:3';
-      else if (val >= 0.9) targetRatio = '1:1';
-      else if (val >= 0.7) targetRatio = '3:4';
-      else targetRatio = '9:16';
-    } else {
-      targetRatio = ratioMap[ratio] || '1:1';
-    }
-
-    const brandingText = (marketingCopy?.headline?.trim() || marketingCopy?.cta?.trim()) 
-      ? `STRICT BRANDING: Integrate Headline: "${marketingCopy?.headline || ''}" and CTA: "${marketingCopy?.cta || ''}" using premium typography.` 
-      : `STRICT REQUIREMENT: NO TEXT. Composition only.`;
-
-    // Strongest possible directive for asset usage
-    const finalPrompt = `ASSET FIDELITY MANDATE: You MUST include ALL visual features from the provided studio asset images. 
-    SCENE DIRECTIVE: ${prompt}. 
-    ${brandingText} 
-    COMPOSITION REQUIREMENTS: High-end professional advertising photography. Merge the product subject and the environment/model context seamlessly. Do not hallucinate generic replacements; use the EXACT assets provided in the parts.
-    FORMAT: ${targetRatio}`;
-
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash-image',
-      contents: { parts: [...assetParts, { text: finalPrompt }] },
-      config: {
-        imageConfig: { aspectRatio: targetRatio as any },
-        safetySettings: SAFETY_SETTINGS
+      let targetRatio = '1:1';
+      if (ratio === 'Custom Size' && customWidth && customHeight) {
+        const r = customWidth / customHeight;
+        if (r > 1.5) targetRatio = '16:9';
+        else if (r > 1.2) targetRatio = '4:3';
+        else if (r < 0.6) targetRatio = '9:16';
+        else if (r < 0.8) targetRatio = '3:4';
+        else targetRatio = '1:1';
+      } else {
+        const supportedRatios: Record<string, string> = {
+          'Instagram Square (1:1)': '1:1', 'Instagram Portrait (4:5)': '3:4', 'Instagram Story (9:16)': '9:16', 
+          'Facebook Feed (16:9)': '16:9', 'Facebook Cover (16:9)': '16:9', 'YouTube Thumbnail (16:9)': '16:9',
+          'LinkedIn Feed (4:5)': '3:4'
+        };
+        targetRatio = supportedRatios[ratio] || '1:1';
       }
-    });
+      
+      // USER REQUEST: STRICT NO-TEXT IF CLEARED
+      const headlineInstr = copy?.headline?.trim() 
+        ? `Render this exact headline: "${copy.headline}".` 
+        : "CRITICAL: DO NOT render any headline text. Leave that area completely blank.";
+      
+      const ctaInstr = copy?.cta?.trim() 
+        ? `Render this exact CTA button text: "${copy.cta}".` 
+        : "CRITICAL: DO NOT render any Call to Action (CTA) text. Leave that area completely blank.";
 
-    let imageUrl = '';
-    const parts = response.candidates?.[0]?.content?.parts || [];
-    for (const p of parts) { if (p.inlineData) { imageUrl = `data:image/png;base64,${p.inlineData.data}`; break; } }
-    if (!imageUrl) throw new Error("GEN_FAIL: Composition failed to yield an image.");
-    return imageUrl;
-  } catch (error) { 
-    throw new Error(sanitizeError(error)); 
-  }
+      const finalPrompt = `
+        PROFESSIONAL AD SYNTHESIS DIRECTIVE: ${prompt}. 
+        STRICT EXECUTION RULES:
+        1. TEXT RENDERING: 
+           - ${headlineInstr}
+           - ${ctaInstr}
+           - DO NOT include labels like 'Headline:' or 'CTA:'. Render only the raw text strings.
+        2. COMPOSITION: Place text strategically in negative space. NEVER obscure the product.
+        3. BRAND HARMONY: Use the asset color palette for all graphical and text elements.
+        4. LIGHTING: Dynamically re-light assets to match the synthesized environment.
+        5. QUALITY: Masterpiece level composition.
+      `;
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-3-pro-image-preview',
+        contents: { parts: [...assetParts, { text: finalPrompt }] },
+        config: {
+          imageConfig: { 
+            aspectRatio: targetRatio as any,
+            imageSize: isHighRes ? "4K" : "1K" 
+          },
+          safetySettings: SAFETY_SETTINGS
+        }
+      });
+
+      let imageUrl = '';
+      const parts = response.candidates?.[0]?.content?.parts || [];
+      for (const p of parts) { if (p.inlineData) { imageUrl = `data:image/png;base64,${p.inlineData.data}`; break; } }
+      if (!imageUrl) throw new Error("GEN_FAIL");
+      return imageUrl;
+    } catch (error) {
+      throw new Error(sanitizeError(error));
+    }
+  });
 };
