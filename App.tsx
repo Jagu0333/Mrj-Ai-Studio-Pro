@@ -28,7 +28,8 @@ import {
   Eraser,
   Undo2,
   Wand2,
-  Cpu
+  Cpu,
+  Key
 } from 'lucide-react';
 import { 
   Asset, 
@@ -84,6 +85,7 @@ const App: React.FC = () => {
   const [isDarkMode, setIsDarkMode] = useState(() => localStorage.getItem('studio-theme') === 'dark');
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [cooldownTime, setCooldownTime] = useState(0);
+  const [showKeySelectionOverlay, setShowKeySelectionOverlay] = useState(false);
   
   const isGenerating = isProcessingCreative || isProcessingCopy || isRefining || isGeneratingPoster || cooldownTime > 0;
   const allAssets = [...subjectAssets, ...contextAssets];
@@ -125,6 +127,27 @@ const App: React.FC = () => {
   }, [cooldownTime]);
 
   const loadHistory = async () => setHistory(await db.getHistory());
+
+  const handleOpenKeySelection = async () => {
+    if (window.aistudio) {
+      await window.aistudio.openSelectKey();
+      setShowKeySelectionOverlay(false);
+    }
+  };
+
+  const handleToggleHighRes = async () => {
+    if (!isHighRes) {
+      // Logic for 4K Premium Keyed Experience
+      if (window.aistudio) {
+        const hasKey = await window.aistudio.hasSelectedApiKey();
+        if (!hasKey) {
+          setShowKeySelectionOverlay(true);
+          return;
+        }
+      }
+    }
+    setIsHighRes(!isHighRes);
+  };
 
   const toggleFullscreen = useCallback(async () => {
     try {
@@ -198,14 +221,11 @@ const App: React.FC = () => {
     try {
       const data = await gemini.performCreativeDeepDive(allAssets);
       let prompt = data.analysis.suggestedPrompt;
-      
-      // Auto-Refine if Art Director Mode is ON
       if (isArtDirectorMode) {
         setIsRefining(true);
         prompt = await gemini.refinePrompt(prompt);
         setIsRefining(false);
       }
-      
       setSelectedPrompt(prompt);
     } catch (err: any) { 
       if (err.message?.includes("QUOTA")) {
@@ -260,6 +280,16 @@ const App: React.FC = () => {
 
   const handleGeneratePoster = async () => {
     if (isGenerating || allAssets.length === 0 || !selectedPrompt) return;
+
+    // Check for High-Res API key requirement
+    if (isHighRes && window.aistudio) {
+      const hasKey = await window.aistudio.hasSelectedApiKey();
+      if (!hasKey) {
+        setShowKeySelectionOverlay(true);
+        return;
+      }
+    }
+
     setIsGeneratingPoster(true);
     setActiveTab('preview');
     try {
@@ -280,8 +310,6 @@ const App: React.FC = () => {
           prompt: selectedPrompt, 
           copy: marketingCopy, 
           ratio: aspectRatio,
-          width: aspectRatio === 'Custom Size' ? customWidth : undefined,
-          height: aspectRatio === 'Custom Size' ? customHeight : undefined,
           timestamp: Date.now() 
       });
       loadHistory();
@@ -549,7 +577,7 @@ const App: React.FC = () => {
             <div className="flex items-center justify-between mb-5">
               <h2 className="text-[12px] font-black text-[#8e8e93] uppercase tracking-[0.2em]">04 Resolution Matrix</h2>
               <button 
-                onClick={() => setIsHighRes(!isHighRes)} 
+                onClick={handleToggleHighRes} 
                 aria-label="Toggle 4K High Resolution Output"
                 className={`px-4 py-1.5 rounded-full text-[10px] font-bold transition-all flex items-center gap-2.5 ${isHighRes ? 'bg-orange-500 text-white shadow-lg' : 'bg-black/5 dark:bg-white/5 text-[#8e8e93]'}`}
               >
@@ -595,7 +623,7 @@ const App: React.FC = () => {
               className="w-full h-16 bg-gradient-to-r from-ios-blue to-[#005aff] text-white rounded-[32px] text-[17px] font-extrabold flex items-center justify-center gap-4 active:scale-95 shadow-2xl shadow-ios-blue/40 hover:brightness-110 transition-all disabled:opacity-20 relative overflow-hidden"
             >
               {isGeneratingPoster ? <Loader2 className="w-6 h-6 animate-spin" /> : <Zap className="w-6 h-6 fill-white" />}
-              Generate Masterpiece
+              {isHighRes ? 'Generate 4K Ultra' : 'Generate 1K Standard'}
             </button>
           </div>
         </aside>
@@ -687,6 +715,39 @@ const App: React.FC = () => {
             >
               Acknowledged
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* KEY SELECTION OVERLAY */}
+      {showKeySelectionOverlay && (
+        <div className="fixed inset-0 z-[1200] flex items-center justify-center p-8 bg-black/80 backdrop-blur-3xl animate-ios-in">
+          <div className="w-full max-w-[440px] bg-white dark:bg-[#1c1c1e] rounded-[56px] p-16 text-center shadow-2xl border border-white/10">
+            <div className="w-24 h-24 bg-orange-500/10 rounded-full flex items-center justify-center mb-10 mx-auto">
+              <Key className="w-12 h-12 text-orange-500" />
+            </div>
+            <h3 className="text-[32px] font-black mb-6 tracking-tight">4K Ultra Engine</h3>
+            <p className="text-[16px] text-ios-gray leading-relaxed mb-8">
+              High-Res rendering requires an active API key from a paid GCP project. 
+              Please select your key to unlock the 4K Ultra synthesis engine.
+            </p>
+            <div className="bg-black/5 dark:bg-white/5 p-4 rounded-2xl mb-12 text-[12px] text-ios-gray font-medium">
+              See <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" className="text-ios-blue underline">Billing Docs</a> for details.
+            </div>
+            <div className="flex flex-col gap-4">
+              <button 
+                onClick={handleOpenKeySelection} 
+                className="w-full h-16 bg-orange-500 text-white rounded-[32px] font-extrabold shadow-lg shadow-orange-500/20 active:scale-95 transition-all"
+              >
+                Select API Key
+              </button>
+              <button 
+                onClick={() => { setIsHighRes(false); setShowKeySelectionOverlay(false); }} 
+                className="w-full h-16 bg-black/5 dark:bg-white/10 text-ios-gray rounded-[32px] font-bold active:scale-95 transition-all"
+              >
+                Back to 1K Standard
+              </button>
+            </div>
           </div>
         </div>
       )}

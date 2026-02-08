@@ -27,7 +27,8 @@ const withRetry = async <T>(fn: () => Promise<T>, retries = 2, delay = 5000): Pr
 const sanitizeError = (err: any): string => {
   const msg = err?.message || "";
   if (msg.includes("429")) return "QUOTA_EXCEEDED";
-  if (msg.includes("403") || msg.includes("401")) return "SECURITY_BLOCK: Access declined.";
+  if (msg.includes("403") || msg.includes("401") || msg.includes("permission denied")) 
+    return "PERMISSION_DENIED: High-Res requires an active API key selection.";
   return "STUDIO_INTERRUPTION: " + msg;
 };
 
@@ -75,17 +76,16 @@ export const performCreativeDeepDive = async (assets: Asset[]): Promise<{ analys
         inlineData: { data: asset.base64, mimeType: asset.mimeType }
       }));
       
-      // Upgrade: Using gemini-3-pro-preview for elite creative reasoning as per Jury request.
       const response = await ai.models.generateContent({
-        model: 'gemini-3-pro-preview',
+        model: 'gemini-3-flash-preview',
         contents: {
           parts: [
             ...parts,
-            { text: "ACT AS WORLD-CLASS CREATIVE DIRECTOR: Conduct a high-fidelity visual DNA analysis. 1) Synthesize an elite agency photorealistic prompt. 2) Generate high-conversion viral copy (Headline, Social Body, CTA) tailored to the brand's aesthetic and psychology." }
+            { text: "ACT AS WORLD-CLASS CREATIVE DIRECTOR: Conduct visual DNA analysis. 1) Synthesize photorealistic prompt. 2) Generate high-conversion viral copy (Headline, Social Body, CTA)." }
           ]
         },
         config: {
-          systemInstruction: "You are an Elite Agency Director and Copywriter. Provide high-end technical and marketing metadata as a JSON object. The 'suggestedPrompt' must be a professional design directive.",
+          systemInstruction: "Provide high-end marketing metadata as a JSON object.",
           responseMimeType: "application/json",
           responseSchema: {
             type: Type.OBJECT,
@@ -96,7 +96,7 @@ export const performCreativeDeepDive = async (assets: Asset[]): Promise<{ analys
                   subjects: { type: Type.STRING },
                   lighting: { type: Type.STRING },
                   brandVibe: { type: Type.STRING },
-                  suggestedPrompt: { type: Type.STRING, description: "Professional visual synthesis prompt" }
+                  suggestedPrompt: { type: Type.STRING }
                 },
                 required: ["subjects", "lighting", "brandVibe", "suggestedPrompt"]
               },
@@ -129,9 +129,9 @@ export const refinePrompt = async (prompt: string): Promise<string> => {
       const ai = getAI();
       const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
-        contents: `RE-ENGINEER THIS VISION AS AN AWARD-WINNING ART DIRECTOR: Elevate this prompt into a technical high-fidelity directive. Include octane-render qualities, cinematic lighting (Rembrandt/Butterfly), and material science details. Raw refined text only: "${prompt}"`,
+        contents: `Elevate this prompt into a technical high-fidelity directive: "${prompt}"`,
         config: {
-          systemInstruction: "You are the Head of Design. Output only the raw, refined, professional prompt text. No conversational filler.",
+          systemInstruction: "Output only the raw, refined prompt text. No filler.",
           safetySettings: SAFETY_SETTINGS
         }
       });
@@ -152,7 +152,7 @@ export const isolateSubject = async (asset: Asset): Promise<{ base64: string, ur
         contents: {
           parts: [
             { inlineData: { data: isolationNormalized.base64, mimeType: isolationNormalized.mimeType } },
-            { text: "ISOLATION: Remove background. High-precision art extraction. Keep subject raw and identical." }
+            { text: "ISOLATION: Remove background." }
           ]
         },
         config: { safetySettings: SAFETY_SETTINGS }
@@ -191,51 +191,32 @@ export const generatePoster = async (
       }).flat();
 
       let targetRatio = '1:1';
-      if (ratio === 'Custom Size' && customWidth && customHeight) {
-        const r = customWidth / customHeight;
-        if (r > 1.5) targetRatio = '16:9';
-        else if (r > 1.2) targetRatio = '4:3';
-        else if (r < 0.6) targetRatio = '9:16';
-        else if (r < 0.8) targetRatio = '3:4';
-        else targetRatio = '1:1';
-      } else {
-        const supportedRatios: Record<string, string> = {
-          'Instagram Square (1:1)': '1:1', 'Instagram Portrait (4:5)': '3:4', 'Instagram Story (9:16)': '9:16', 
-          'Facebook Feed (16:9)': '16:9', 'Facebook Cover (16:9)': '16:9', 'YouTube Thumbnail (16:9)': '16:9',
-          'LinkedIn Feed (4:5)': '3:4'
-        };
-        targetRatio = supportedRatios[ratio] || '1:1';
-      }
+      const supportedRatios: Record<string, string> = {
+        'Instagram Square (1:1)': '1:1', 'Instagram Portrait (4:5)': '3:4', 'Instagram Story (9:16)': '9:16', 
+        'Facebook Feed (16:9)': '16:9', 'Facebook Cover (16:9)': '16:9', 'YouTube Thumbnail (16:9)': '16:9',
+        'LinkedIn Feed (4:5)': '3:4'
+      };
+      targetRatio = supportedRatios[ratio] || '1:1';
       
-      // USER REQUEST: STRICT NO-TEXT IF CLEARED
       const headlineInstr = copy?.headline?.trim() 
-        ? `Render this exact headline: "${copy.headline}".` 
-        : "CRITICAL: DO NOT render any headline text. Leave that area completely blank.";
-      
+        ? `Render headline: "${copy.headline}".` 
+        : "DO NOT render headline text.";
       const ctaInstr = copy?.cta?.trim() 
-        ? `Render this exact CTA button text: "${copy.cta}".` 
-        : "CRITICAL: DO NOT render any Call to Action (CTA) text. Leave that area completely blank.";
+        ? `Render CTA button: "${copy.cta}".` 
+        : "DO NOT render CTA text.";
 
-      const finalPrompt = `
-        PROFESSIONAL AD SYNTHESIS DIRECTIVE: ${prompt}. 
-        STRICT EXECUTION RULES:
-        1. TEXT RENDERING: 
-           - ${headlineInstr}
-           - ${ctaInstr}
-           - DO NOT include labels like 'Headline:' or 'CTA:'. Render only the raw text strings.
-        2. COMPOSITION: Place text strategically in negative space. NEVER obscure the product.
-        3. BRAND HARMONY: Use the asset color palette for all graphical and text elements.
-        4. LIGHTING: Dynamically re-light assets to match the synthesized environment.
-        5. QUALITY: Masterpiece level composition.
-      `;
+      const finalPrompt = `PROFESSIONAL AD SYNTHESIS: ${prompt}. ${headlineInstr} ${ctaInstr}. Place text in negative space. Use brand palette.`;
+
+      // Dual-Model Routing
+      const selectedModel = isHighRes ? 'gemini-3-pro-image-preview' : 'gemini-2.5-flash-image';
 
       const response = await ai.models.generateContent({
-        model: 'gemini-3-pro-image-preview',
+        model: selectedModel,
         contents: { parts: [...assetParts, { text: finalPrompt }] },
         config: {
           imageConfig: { 
             aspectRatio: targetRatio as any,
-            imageSize: isHighRes ? "4K" : "1K" 
+            ...(isHighRes ? { imageSize: "4K" } : {})
           },
           safetySettings: SAFETY_SETTINGS
         }
