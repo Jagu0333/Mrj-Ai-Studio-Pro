@@ -3,12 +3,9 @@
 import { GoogleGenAI, Type, GenerateContentResponse } from "@google/genai";
 import { Asset, AnalysisResult, MarketingCopy, AspectRatio } from "../types";
 
+// Always use new GoogleGenAI({ apiKey: process.env.API_KEY }) directly as per coding guidelines
 const getAI = () => {
-  const key = process.env.API_KEY;
-  if (!key || key === "undefined") {
-    throw new Error("STUDIO_CONFIG_ERROR: Secure environment key is missing.");
-  }
-  return new GoogleGenAI({ apiKey: key });
+  return new GoogleGenAI({ apiKey: process.env.API_KEY });
 };
 
 const withRetry = async <T>(fn: () => Promise<T>, retries = 2, delay = 5000): Promise<T> => {
@@ -38,6 +35,29 @@ const SAFETY_SETTINGS = [
   { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
   { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
 ];
+
+const calculateBestAspectRatio = (w: number, h: number): string => {
+  const ratio = w / h;
+  const targets = [
+    { name: "1:1", val: 1 },
+    { name: "4:3", val: 4/3 },
+    { name: "3:4", val: 3/4 },
+    { name: "16:9", val: 16/9 },
+    { name: "9:16", val: 9/16 }
+  ];
+  
+  let closest = targets[0];
+  let minDiff = Math.abs(ratio - closest.val);
+  
+  for (const target of targets) {
+    const diff = Math.abs(ratio - target.val);
+    if (diff < minDiff) {
+      minDiff = diff;
+      closest = target;
+    }
+  }
+  return closest.name;
+};
 
 export const compressImage = (base64: string, mimeType: string, maxDim: number = 1024): Promise<{ base64: string, url: string, mimeType: string }> => {
   return new Promise((resolve, reject) => {
@@ -186,26 +206,33 @@ export const generatePoster = async (
         const data = (bgRemoval && a.isolatedBase64) ? a.isolatedBase64 : a.base64;
         return [
           { inlineData: { data, mimeType: 'image/png' } },
-          { text: `BRAND ASSET ${i + 1}: Preserve original colors and geometry.` }
+          { text: `BRAND ASSET ${i + 1}: High-fidelity preservation. Maintain exact colors and object geometry.` }
         ];
       }).flat();
 
       let targetRatio = '1:1';
-      const supportedRatios: Record<string, string> = {
-        'Instagram Square (1:1)': '1:1', 'Instagram Portrait (4:5)': '3:4', 'Instagram Story (9:16)': '9:16', 
-        'Facebook Feed (16:9)': '16:9', 'Facebook Cover (16:9)': '16:9', 'YouTube Thumbnail (16:9)': '16:9',
-        'LinkedIn Feed (4:5)': '3:4'
-      };
-      targetRatio = supportedRatios[ratio] || '1:1';
+      let dimensionInstruction = '';
+
+      if (ratio === 'Custom Size' && customWidth && customHeight) {
+        targetRatio = calculateBestAspectRatio(customWidth, customHeight);
+        dimensionInstruction = `MANDATORY GEOMETRY: Compose this poster for exactly ${customWidth}x${customHeight} pixels. Adjust all whitespace, text placement, and asset scaling to fit this specific high-resolution layout perfectly. Do not deviate from this aspect ratio.`;
+      } else {
+        const supportedRatios: Record<string, string> = {
+          'Instagram Square (1:1)': '1:1', 'Instagram Portrait (4:5)': '3:4', 'Instagram Story (9:16)': '9:16', 
+          'Facebook Feed (16:9)': '16:9', 'Facebook Cover (16:9)': '16:9', 'YouTube Thumbnail (16:9)': '16:9',
+          'LinkedIn Feed (4:5)': '3:4'
+        };
+        targetRatio = supportedRatios[ratio] || '1:1';
+      }
       
       const headlineInstr = copy?.headline?.trim() 
-        ? `Render headline: "${copy.headline}".` 
-        : "DO NOT render headline text.";
+        ? `INTEGRATED HEADLINE: Render text "${copy.headline}" using clean, premium branding typography.` 
+        : "TEXTUAL CONSTRAINT: Do not include any headline text.";
       const ctaInstr = copy?.cta?.trim() 
-        ? `Render CTA button: "${copy.cta}".` 
-        : "DO NOT render CTA text.";
+        ? `INTEGRATED CTA: Create a sleek call-to-action button or text: "${copy.cta}".` 
+        : "TEXTUAL CONSTRAINT: Do not include any CTA text.";
 
-      const finalPrompt = `PROFESSIONAL AD SYNTHESIS: ${prompt}. ${headlineInstr} ${ctaInstr}. Place text in negative space. Use brand palette.`;
+      const finalPrompt = `MASTER AD SYNTHESIS: ${prompt}. ${dimensionInstruction} ${headlineInstr} ${ctaInstr}. Position marketing copy in optimal negative space. Adhere to premium brand aesthetic. Ensure subjects are front-and-center. Render for a ${targetRatio} composition with maximum pixel density.`;
 
       // Dual-Model Routing
       const selectedModel = isHighRes ? 'gemini-3-pro-image-preview' : 'gemini-2.5-flash-image';

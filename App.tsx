@@ -68,8 +68,8 @@ const App: React.FC = () => {
   const [isProcessingCopy, setIsProcessingCopy] = useState(false);
   const [selectedPrompt, setSelectedPrompt] = useState('');
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>('Instagram Square (1:1)');
-  const [customWidth, setCustomWidth] = useState<number>(1920);
-  const [customHeight, setCustomHeight] = useState<number>(1080);
+  const [customWidth, setCustomWidth] = useState<number>(1024);
+  const [customHeight, setCustomHeight] = useState<number>(1024);
   const [marketingCopy, setMarketingCopy] = useState<MarketingCopy>({ headline: '', body: '', cta: '' });
   const [isGeneratingPoster, setIsGeneratingPoster] = useState(false);
   const [loadingStep, setLoadingStep] = useState(0);
@@ -132,12 +132,19 @@ const App: React.FC = () => {
     if (window.aistudio) {
       await window.aistudio.openSelectKey();
       setShowKeySelectionOverlay(false);
+      // Immediately trigger 4K resolution defaults after key selection
+      setAspectRatio('Custom Size');
+      setCustomWidth(3840);
+      setCustomHeight(2160);
+      setIsHighRes(true);
     }
   };
 
   const handleToggleHighRes = async () => {
-    if (!isHighRes) {
-      // Logic for 4K Premium Keyed Experience
+    const nextState = !isHighRes;
+    
+    if (nextState) {
+      // Logic for 4K Ultra Activation
       if (window.aistudio) {
         const hasKey = await window.aistudio.hasSelectedApiKey();
         if (!hasKey) {
@@ -145,8 +152,19 @@ const App: React.FC = () => {
           return;
         }
       }
+      // Automate 4K Resolution setup: Pre-fill fields
+      setAspectRatio('Custom Size');
+      setCustomWidth(3840);
+      setCustomHeight(2160);
+    } else {
+      // Logic for 1K Standard Activation
+      // Pre-fill fields with standard defaults
+      setAspectRatio('Custom Size');
+      setCustomWidth(1024);
+      setCustomHeight(1024);
     }
-    setIsHighRes(!isHighRes);
+    
+    setIsHighRes(nextState);
   };
 
   const toggleFullscreen = useCallback(async () => {
@@ -281,7 +299,24 @@ const App: React.FC = () => {
   const handleGeneratePoster = async () => {
     if (isGenerating || allAssets.length === 0 || !selectedPrompt) return;
 
-    // Check for High-Res API key requirement
+    // TECHNICAL LOCK AND LIMIT VALIDATION
+    // As per requirement: Inform user if dimensions exceed model capacity
+    const maxDim = Math.max(customWidth, customHeight);
+    if (maxDim > 2048 && !isHighRes) {
+      const proceed = window.confirm(
+        `Technical Alert: 1K Standard model capacity is limited for this resolution.\n\n` +
+        `Request: ${customWidth}x${customHeight}\n\n` +
+        `Proceed at closest supported resolution? Or switch to 4K Ultra?`
+      );
+      if (!proceed) return;
+    } else if (maxDim > 4096 && isHighRes) {
+      const proceed = window.confirm(
+        `Resolution Warning: The requested size (${customWidth}x${customHeight}) exceeds 4K limits.\n\n` +
+        `The system will approximate dimensions to the nearest supported maximum. Proceed?`
+      );
+      if (!proceed) return;
+    }
+
     if (isHighRes && window.aistudio) {
       const hasKey = await window.aistudio.hasSelectedApiKey();
       if (!hasKey) {
@@ -293,6 +328,7 @@ const App: React.FC = () => {
     setIsGeneratingPoster(true);
     setActiveTab('preview');
     try {
+      // Use exactly the final locked width/height provided by the user
       const img = await gemini.generatePoster(
         allAssets, 
         selectedPrompt, 
@@ -310,12 +346,14 @@ const App: React.FC = () => {
           prompt: selectedPrompt, 
           copy: marketingCopy, 
           ratio: aspectRatio,
-          timestamp: Date.now() 
+          timestamp: Date.now(),
+          width: aspectRatio === 'Custom Size' ? customWidth : undefined,
+          height: aspectRatio === 'Custom Size' ? customHeight : undefined
       });
       loadHistory();
     } catch (err: any) { 
       if (err.message?.includes("QUOTA")) {
-        setError({ message: "Poster printer exhausted.", type: 'quota' });
+        setError({ message: "Poster synthesis capacity exhausted.", type: 'quota' });
         setCooldownTime(60);
       } else {
         setError({ message: err.message, type: 'generic' });
@@ -325,10 +363,46 @@ const App: React.FC = () => {
     finally { setIsGeneratingPoster(false); }
   };
 
-  const handleDownloadImage = (url: string) => {
+  /**
+   * LOCKED PIXEL CONTROL: Strict utility to resize generated image to user-defined pixels.
+   * Forces output to match locked width x height exactly.
+   */
+  const resizeToExactPixels = (imageUrl: string, targetWidth: number, targetHeight: number): Promise<string> => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.src = imageUrl;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = targetWidth;
+        canvas.height = targetHeight;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = 'high';
+          
+          // STRICT PIXEL LOCK: No auto-scaling beyond target dimensions.
+          const scale = Math.max(targetWidth / img.width, targetHeight / img.height);
+          const x = (targetWidth / 2) - (img.width / 2) * scale;
+          const y = (targetHeight / 2) - (img.height / 2) * scale;
+          ctx.drawImage(img, x, y, img.width * scale, img.height * scale);
+        }
+        resolve(canvas.toDataURL('image/png', 1.0));
+      };
+    });
+  };
+
+  const handleDownloadImage = async (url: string) => {
+    let downloadUrl = url;
+    
+    // ENFORCE LOCKED PIXELS ON DOWNLOAD
+    if (aspectRatio === 'Custom Size' && customWidth && customHeight) {
+      downloadUrl = await resizeToExactPixels(url, customWidth, customHeight);
+    }
+
     const link = document.createElement('a');
-    link.href = url;
-    link.download = `Masterpiece_${Date.now()}.png`;
+    link.href = downloadUrl;
+    link.download = `StudioPro_Masterpiece_${customWidth}x${customHeight}_${Date.now()}.png`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -578,7 +652,7 @@ const App: React.FC = () => {
               <h2 className="text-[12px] font-black text-[#8e8e93] uppercase tracking-[0.2em]">04 Resolution Matrix</h2>
               <button 
                 onClick={handleToggleHighRes} 
-                aria-label="Toggle 4K High Resolution Output"
+                aria-label="Toggle High Resolution Ultra Output"
                 className={`px-4 py-1.5 rounded-full text-[10px] font-bold transition-all flex items-center gap-2.5 ${isHighRes ? 'bg-orange-500 text-white shadow-lg' : 'bg-black/5 dark:bg-white/5 text-[#8e8e93]'}`}
               >
                 <Cpu className="w-4 h-4" /> {isHighRes ? '4K Ultra' : '1K Standard'}
@@ -604,12 +678,12 @@ const App: React.FC = () => {
               <div className="flex gap-5 p-6 bg-white dark:bg-[#1c1c1e] rounded-[32px] border border-black/[0.05] dark:border-white/[0.05] animate-ios-in shadow-inner mb-8">
                 <div className="flex-1">
                   <label className="text-[10px] font-black text-ios-gray/50 uppercase block mb-2 tracking-widest">Width</label>
-                  <input type="number" aria-label="Custom width in pixels" value={customWidth} onChange={(e) => setCustomWidth(parseInt(e.target.value))} className="w-full bg-transparent font-extrabold text-[16px] focus:outline-none border-b border-black/[0.05] focus:border-ios-blue pb-1.5" />
+                  <input type="number" aria-label="Custom width in pixels" value={customWidth} onChange={(e) => setCustomWidth(parseInt(e.target.value) || 0)} className="w-full bg-transparent font-extrabold text-[16px] focus:outline-none border-b border-black/[0.05] focus:border-ios-blue pb-1.5" />
                 </div>
                 <div className="flex items-center text-ios-gray/40 font-black mt-5">×</div>
                 <div className="flex-1">
                   <label className="text-[10px] font-black text-ios-gray/50 uppercase block mb-2 tracking-widest">Height</label>
-                  <input type="number" aria-label="Custom height in pixels" value={customHeight} onChange={(e) => setCustomHeight(parseInt(e.target.value))} className="w-full bg-transparent font-extrabold text-[16px] focus:outline-none border-b border-black/[0.05] focus:border-ios-blue pb-1.5" />
+                  <input type="number" aria-label="Custom height in pixels" value={customHeight} onChange={(e) => setCustomHeight(parseInt(e.target.value) || 0)} className="w-full bg-transparent font-extrabold text-[16px] focus:outline-none border-b border-black/[0.05] focus:border-ios-blue pb-1.5" />
                 </div>
               </div>
             )}
@@ -632,7 +706,10 @@ const App: React.FC = () => {
         <main className="flex-1 h-full flex flex-col items-center justify-center p-10 lg:p-20 overflow-hidden relative bg-[#f2f2f7] dark:bg-[#0a0a0a]">
           <div className={`relative rounded-[64px] overflow-hidden bg-white dark:bg-black/20 flex items-center justify-center w-full max-w-7xl h-full shadow-[0_48px_120px_-24px_rgba(0,0,0,0.15)] transition-all duration-1000 ${isGeneratingPoster ? 'opacity-0 scale-90 blur-3xl' : 'opacity-100 scale-100'} p-16 border border-white/40 dark:border-white/5`}>
             {finalImage ? (
-              <div className="w-full h-full group relative rounded-[40px] overflow-hidden shadow-2xl">
+              <div 
+                className="group relative rounded-[40px] overflow-hidden shadow-2xl"
+                style={aspectRatio === 'Custom Size' ? { aspectRatio: `${customWidth}/${customHeight}`, maxHeight: '100%' } : { width: '100%', height: '100%' }}
+              >
                 <img src={finalImage} className="w-full h-full object-contain" alt="Final Generated Ad Creative" />
                 <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-all flex items-center justify-center gap-12 backdrop-blur-3xl">
                   <button 
@@ -650,6 +727,11 @@ const App: React.FC = () => {
                     <Edit3 className="w-10 h-10" />
                   </button>
                 </div>
+                {aspectRatio === 'Custom Size' && (
+                  <div className="absolute top-6 right-6 px-4 py-2 bg-black/40 backdrop-blur-md rounded-full text-white text-[10px] font-black uppercase tracking-widest border border-white/10 pointer-events-none">
+                    Locked: {customWidth}x{customHeight}
+                  </div>
+                )}
               </div>
             ) : (
               <div className="text-center opacity-[0.05] dark:opacity-[0.1] flex flex-col items-center gap-10 pointer-events-none select-none">
