@@ -227,12 +227,12 @@ export const generatePoster = async (
       
       const headlineInstr = copy?.headline?.trim() 
         ? `INTEGRATED HEADLINE: Render text "${copy.headline}" using clean, premium branding typography.` 
-        : "TEXTUAL CONSTRAINT: Do not include any headline text.";
+        : "TEXTUAL PROHIBITION: DO NOT include any headline or hook text. NO EXCEPTIONS. Do not invent slogans.";
       const ctaInstr = copy?.cta?.trim() 
         ? `INTEGRATED CTA: Create a sleek call-to-action button or text: "${copy.cta}".` 
-        : "TEXTUAL CONSTRAINT: Do not include any CTA text.";
+        : "TEXTUAL PROHIBITION: DO NOT include any Call to Action or button text. NO EXCEPTIONS. Do not invent placeholders.";
 
-      const finalPrompt = `MASTER AD SYNTHESIS: ${prompt}. ${dimensionInstruction} ${headlineInstr} ${ctaInstr}. Position marketing copy in optimal negative space. Adhere to premium brand aesthetic. Ensure subjects are front-and-center. Render for a ${targetRatio} composition with maximum pixel density.`;
+      const finalPrompt = `MASTER AD SYNTHESIS: ${prompt}. ${dimensionInstruction} ${headlineInstr} ${ctaInstr}. HARD CONSTRAINT: If a text field is prohibited above, the corresponding area MUST REMAIN FULLY TEXT-FREE. Do not use default copy or placeholders. Adhere to premium brand aesthetic. Render for a ${targetRatio} composition.`;
 
       // Dual-Model Routing
       const selectedModel = isHighRes ? 'gemini-3-pro-image-preview' : 'gemini-2.5-flash-image';
